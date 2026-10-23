@@ -3,6 +3,7 @@
 Estado: em revisão
 Data: 2026-10-23
 Origem: sessão de brainstorming (perguntas, alternativas e decisões registadas abaixo)
+Revisão: 2026-10-23, depois do relatório `reports/Módulos iniciais do hub ecommerce.md` (D12 e D13 revistas, D26 a D32 novas, questões 8 a 12)
 
 Este documento consolida o desenho do core do produto. Não é uma spec: cada bloco aqui descrito será transformado numa ou mais changes OpenSpec, com cenários, testes escritos antes do código e só depois implementação (ver secção 9).
 
@@ -15,20 +16,24 @@ Um SaaS multi tenant para negócios de ecommerce, agnóstico ao ERP, à platafor
 3. 2FA e RBAC multinível.
 4. Backoffice interno para gerir empresas, utilizadores, subscrições, packs, permissões, métricas, logs, créditos de IA, ligações a ERPs, marketplaces e ecommerces, e módulos por empresa.
 
-Módulos possíveis (não fazem parte do primeiro marco, exceto encomendas e métricas): dashboards e métricas customizadas, automações, PIM, WMS, integrações com ecommerce, marketplaces e ERPs, suporte, gestão de encomendas multicanal, Ads (Google Ads, Meta Ads, Google Analytics, Bing).
+Módulos possíveis (não fazem parte do primeiro marco, exceto encomendas, leitura de stock e margem): dashboards e métricas customizadas, automações, PIM, WMS, integrações com ecommerce, marketplaces e ERPs, suporte, gestão de encomendas multicanal, Ads (Google Ads, Meta Ads, Google Analytics, Bing).
 
 ### 1.1 Primeiro marco
 
 Core completo mais uma fatia vertical fina que o valida de ponta a ponta:
 
 1. Importar encomendas de **PrestaShop 9** e de **Mirakl (Worten)**.
-2. Painel de métricas de encomendas.
-3. Agente "Analista de encomendas" que responde a perguntas sobre os dados.
-4. Aceitar e recusar linhas de encomenda Mirakl a partir do hub, sempre com aprovação humana. É a primeira ação de escrita do produto.
+2. Ler o stock do PrestaShop e reservar esse stock quando a encomenda entra no hub. O hub não escreve stock nos canais neste marco.
+3. Aceitar linhas de encomenda Mirakl automaticamente por regras deterministas (stock confirmado, margem acima do limiar). As linhas que falham uma regra vão para uma **fila de exceções** com aprovação humana (stock em falta, margem negativa depois da comissão, preço anómalo, prazo de envio em risco), com contagem decrescente até ao fim do prazo. É a primeira ação de escrita do produto.
+4. Margem de contribuição por canal e por SKU (custo, comissão, portes, devoluções), no lugar de um painel de vendas. Os custos vêm do PrestaShop, de importação por CSV ou, quando faltam, de uma estimativa por categoria assinalada como tal.
+5. Indicadores Worten (taxa e tempo de aceitação, envio dentro do prazo) com alertas antes de cada limiar.
+6. **Agente de exceções**: trabalha a fila de exceções e escreve um resumo diário. Os números vêm só de métricas deterministas, com a fórmula visível.
+
+Porquê (relatório de 2026-10-23): a dor mais grave do segmento são os indicadores de aceitação da Mirakl, com suspensão da conta; o recorte anterior (importar, aprovar tudo à mão, painel de vendas, chat) já existe de graça no Base.com; a disposição para pagar está no stock; nenhum produto encontrado dá margem do lado do vendedor Mirakl. A aprovação humana de todas as linhas punha em risco o prazo de 24 horas fora do horário de trabalho.
 
 ### 1.2 Fora do primeiro marco
 
-PIM, WMS, automações, suporte, Ads, ERPs, faturação grossista com pool de créditos partilhado, SSO/SAML, módulo PrestaShop próprio com eventos em tempo real.
+Envio de stock e preço para os canais (proposto como segundo módulo, ver secção 10), PIM, WMS, automações, suporte, Ads, ERPs, faturação grossista com pool de créditos partilhado, SSO/SAML, módulo PrestaShop próprio com eventos em tempo real.
 
 ## 2. Base técnica
 
@@ -53,6 +58,8 @@ Verificado na importação: build verde, 572 testes unitários de backend e 163 
 Multi tenancy, RBAC com âmbitos, parceiros, planos e entitlements, metering, billing, créditos de IA, runtime de agentes, framework de conectores, API keys, passkeys, MCP.
 
 ### 2.3 Problemas conhecidos a corrigir na Fase 0
+
+Resolvidos pela change `fix-ci-baseline` (implementada, por arquivar).
 
 1. `apps/api/src/app.module.spec.ts` depende de existir `.env` (o AppModule valida o ambiente ao ser importado). Num CI limpo falha.
 2. O contexto de `openspec/config.yaml` ainda descreve um template genérico; tem de passar a descrever o domínio do hub.
@@ -173,6 +180,8 @@ Decisão: o sistema de subscrições é nosso. Os fornecedores de pagamento e de
 
 Proteção contra abuso: email verificado, captcha no registo, limite de organizações grátis por pessoa.
 
+O relatório de 2026-10-23 sugere um free tier de cerca de 100 encomendas, uma loja e um marketplace, com regras de aceitação, margem básica e resumo semanal, e planos pagos em degraus de 19 a 29 €, 39 a 49 € e 79 a 149 € por mês. É uma hipótese por validar; os números continuam em aberto (questão 5).
+
 ## 5. Modelo canónico e conectores
 
 ### 5.1 Modelo canónico de encomendas
@@ -184,22 +193,27 @@ Proteção contra abuso: email verificado, captcha no registo, limite de organiz
 5. Payload original em JSONB e campos específicos do canal em `attributes`, separados por conector.
 6. Dados pessoais cifrados com o `EncryptionService` do template; retenção por plano; remoção RGPD como operação de primeira classe.
 7. Métricas a partir de agregados diários por organização, canal e dia. O agente usa tools de consulta tipadas; não há geração de SQL livre.
+8. Catálogo fino, só o necessário para stock e margem: SKU mestre, EAN, título, custo (com a origem: PrestaShop, CSV ou estimativa por categoria) e IVA. Cada SKU liga a uma oferta por canal (identificador externo, preço, estado). Não é um PIM.
+9. Stock por localização com histórico de movimentos, e reservas criadas pela importação de encomendas e libertadas por envio, cancelamento ou recusa.
+10. Cada linha de encomenda guarda as taxas do canal (comissão, portes) para que a margem seja calculada por linha. A forma exata destas entidades é definida nas specs.
 
 ### 5.2 Framework de conectores
 
-1. Cada conector declara: manifesto com versão e capacidades (`orders.read`, `orders.accept`, ...), tipo de autenticação, `listChangedOrders(cursor)`, `getOrder(id)`, função pura `mapOrder(raw)`, ações de escrita.
+1. Cada conector declara: manifesto com versão e capacidades (`orders.read`, `orders.accept`, `stock.read`, `products.read`, ...), tipo de autenticação, `listChangedOrders(cursor)`, `getOrder(id)`, função pura `mapOrder(raw)`, ações de escrita.
 2. Motor de sincronização genérico: agendamento por ligação conforme o plano, cursor persistido, importação inicial com profundidade conforme o plano, rate limit por ligação, retries com backoff, DLQ, estado "precisa de reautenticação" em falhas de credenciais.
 
 ### 5.3 PrestaShop 9
 
 1. Admin API com OAuth e scopes por entidade (`order_read`, ...). Não está confirmado que expõe encomendas; o Webservice antigo continua no PrestaShop 9 e cobre encomendas.
-2. A change começa com uma spike contra PrestaShop 9 em Docker para confirmar a cobertura e gravar fixtures. Se a Admin API não chegar, o conector usa o Webservice para encomendas.
+2. A change começa com uma spike contra PrestaShop 9 em Docker para confirmar a cobertura e gravar fixtures. Se a Admin API não chegar, o conector usa o Webservice para encomendas. A spike cobre também a leitura de stock (`stock_availables` no Webservice) e do custo do produto (`wholesale_price`), que alimentam a reserva e a margem.
 3. Sem webhooks nativos: polling incremental pela data de atualização. Mais tarde, módulo próprio com eventos em tempo real (também canal de aquisição na PrestaShop Addons).
 
 ### 5.4 Mirakl (Worten)
 
 1. Seller API com API key por marketplace; a spike compara com a Mirakl Connect.
-2. Encomendas chegam em `WAITING_ACCEPTANCE` e têm de ser aceites (OR21) dentro do prazo, sob pena de cancelamento automático. Por isso a aceitação e a recusa entram no primeiro marco, com aprovação humana.
+2. Encomendas chegam em `WAITING_ACCEPTANCE` e têm de ser aceites (OR21) dentro do prazo, sob pena de cancelamento automático; na Worten, 24 horas segundo os termos v2025.10.23 (a confirmar, questão 8). Por isso a aceitação e a recusa entram no primeiro marco.
+3. A aceitação automática é feita por um motor de regras determinista, configurado pela organização; nunca é uma decisão do modelo. O agente só trabalha a fila de exceções e propõe, e a pessoa aprova (ver 6.2, ponto 3).
+4. Os indicadores Worten são calculados pelo hub a partir das encomendas importadas (instantes de receção, aceitação e envio). A spike verifica se a Seller API expõe os valores oficiais do vendedor e os campos de comissão por linha (questão 11).
 
 ### 5.5 Testes de conectores
 
@@ -222,7 +236,7 @@ Claude API com o Tool Runner do SDK TypeScript (`@anthropic-ai/sdk`), a correr n
    | Rota | Modelo | Effort inicial |
    |---|---|---|
    | Classificação e extração (volume) | `claude-haiku-5-5` | baixo |
-   | Analista conversacional | `claude-sonnet-5-5` | médio |
+   | Agente de exceções (propostas e conversa) | `claude-sonnet-5-5` | médio |
    | Análises complexas e planeamento | `claude-opus-5-5` | alto |
 
    Regras: o modelo escolhe se no início do run e nunca muda a meio (raciocínio e cache estão presos ao modelo); cada rota tem evals próprios; a tabela de créditos tem conversão por modelo. Preços de referência por milhão de tokens (entrada/saída): Opus 5.5 $4/$20, Sonnet 5.5 $2/$10, Haiku 5.5 $0,10/$0,50.
@@ -236,7 +250,14 @@ Claude API com o Tool Runner do SDK TypeScript (`@anthropic-ai/sdk`), a correr n
 
 ### 6.3 Primeiro agente
 
-"Analista de encomendas": pesquisar encomendas, ver encomenda, séries de métricas, comparação entre canais; com aprovação, aceitar ou recusar linhas Mirakl.
+"Agente de exceções" (substitui o "Analista de encomendas"):
+
+1. Trabalha a fila de exceções: para cada linha explica a regra que falhou, mostra stock, margem depois da comissão e prazo restante, e propõe aceitar ou recusar. Com aprovação, executa.
+2. Escreve um resumo diário: exceções tratadas e pendentes, indicadores Worten face aos limiares, linhas com margem negativa.
+3. Os números vêm só de métricas deterministas, cada uma com a fórmula visível; o agente nunca calcula valores e pode responder "não sei".
+4. Proposto, por decidir (D32): perguntas livres sobre encomendas no mesmo agente, pagas em créditos; resumos em lote com o modelo pequeno.
+
+Porquê: a evidência é forte para IA assistiva em tarefas delimitadas e fraca para perguntas livres sobre números (erros de soma documentados, acerto baixo em geração de consultas), e as plataformas já oferecem copilotos de conversa sem custo.
 
 ## 7. Backoffice, aplicação de cliente, audit e observabilidade
 
@@ -344,17 +365,20 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 ### Marco 3: conectores e encomendas
 
 1. `connector-framework` (com conector falso)
-2. `canonical-orders`
-3. `prestashop9-connector` (começa com spike)
-4. `mirakl-connector` (começa com spike Seller API vs Connect)
-5. `order-metrics`
-6. `mirakl-order-acceptance` (escrita com aprovação)
+2. `canonical-orders` (com taxas por linha)
+3. `prestashop9-connector` (começa com spike; encomendas, stock e custo)
+4. `mirakl-connector` (começa com spike Seller API vs Connect; encomendas e comissões)
+5. `thin-catalog-and-costs` (SKU mestre, EAN, ofertas por canal, custos do PrestaShop, por CSV ou estimados por categoria)
+6. `stock-read-and-reservation`
+7. `margin-metrics` (margem de contribuição por canal e SKU)
+8. `marketplace-kpis` (indicadores Worten e alertas antes dos limiares)
+9. `mirakl-order-acceptance` (regras deterministas e fila de exceções com aprovação)
 
 ### Marco 4: agentes
 
 1. `agent-runtime` (registo de tools, runs, encaminhamento de modelos, reserva de créditos, SSE)
 2. `agent-approvals`
-3. `orders-analyst-agent` (com evals)
+3. `exceptions-agent` (fila de exceções e resumo diário, com evals)
 4. `mcp-server`
 
 ### Marco 5: cobrança (antes de abrir os planos pagos)
@@ -368,6 +392,15 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 Futuro, como adaptadores do mesmo motor: `stripe-payments` e `moloni-invoicing`.
 
 Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o free tier funcionar com limites reais; a cobrança vem depois da fatia vertical, para validar o produto com utilizadores free mais cedo.
+
+### Depois do Marco 5 (proposta do relatório, por decidir)
+
+1. `stock-push`: envio de stock e preço para as ofertas Mirakl e para o PrestaShop; segundo módulo e primeiro gatilho pago, lançado junto com a cobrança (D30).
+2. KuantoKusta e integrações com a faturação portuguesa (Moloni, InvoiceXpress), que nenhum concorrente encontrado cobre bem.
+3. Publicação de ofertas por EAN com regras de preço, a ponte para o catálogo.
+4. PIM ligeiro com IA para textos em português e espanhol e mapeamento de atributos Mirakl; também a entrada em Espanha.
+5. Feed Google Shopping e Ads como leitura de rentabilidade sobre a margem já recolhida (D31).
+6. WMS através de parceiros de envio (Sendcloud, CTT) até o volume o justificar (D31).
 
 ## 11. Registo de decisões
 
@@ -384,8 +417,8 @@ Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o fr
 | D9 | Motor de subscrições interno; Easypay para cobrar e faturação manual no MVP; Stripe e Moloni no futuro como adaptadores | Decidido |
 | D10 | Créditos de IA da plataforma com ledger, reserva e liquidação | Decidido |
 | D11 | Fim de parceria: cliente passa a pagar por si, 14 dias de graça | Decidido |
-| D12 | Primeira fatia: encomendas e métricas com PrestaShop 9 e Mirakl | Decidido |
-| D13 | Aceitar e recusar encomendas Mirakl com aprovação no primeiro marco | Decidido |
+| D12 | Primeira fatia: encomendas, stock lido e reservado, margem e indicadores Worten, com PrestaShop 9 e Mirakl | Decidido (revisto a 2026-10-23) |
+| D13 | Aceitação Mirakl automática por regras deterministas; aprovação humana só na fila de exceções; sem modo sombra | Decidido (revisto a 2026-10-23; antes: aprovação humana em todas as linhas) |
 | D14 | Claude API com Tool Runner nos nossos workers | Proposto |
 | D15 | Multi modelo desde o início, modelo fixo por run | Decidido |
 | D16 | API Anthropic direta com minimização de dados pessoais e DPA | Decidido |
@@ -398,6 +431,13 @@ Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o fr
 | D23 | Postgres no Supabase (UE) no MVP, só como Postgres gerido; Postgres interno depois | Decidido |
 | D24 | Data API do Supabase desligada; app com papel restrito sem `BYPASSRLS` | Proposto |
 | D25 | Testes de integração contra Postgres oficial na mesma versão major, para garantir portabilidade | Proposto |
+| D26 | Ler e reservar stock na primeira fatia; o envio de stock para os canais fica fora do primeiro marco | Decidido |
+| D27 | Margem de contribuição por canal e SKU no lugar do painel de vendas; custos do PrestaShop, por CSV ou estimados por categoria | Decidido |
+| D28 | Indicadores Worten calculados pelo hub, com alertas antes de cada limiar | Decidido |
+| D29 | Primeiro agente é o agente de exceções; números só de métricas deterministas, com fórmula visível | Decidido |
+| D30 | Segundo módulo e primeiro gatilho pago: envio de stock e preço, lançado com a cobrança | Proposto |
+| D31 | Ads como leitura de rentabilidade, não gestão de lances; WMS através de parceiros de envio | Proposto |
+| D32 | Perguntas livres ao agente pagas em créditos; resumos em lote com o modelo pequeno | Proposto |
 
 ## 12. Questões em aberto
 
@@ -405,6 +445,11 @@ Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o fr
 2. Contabilista: motivos de isenção de IVA, prazo de emissão em subscrições pagas adiantadas, tipo de documento (fatura recibo ou fatura e recibo) e destinatário da fatura no modo parceiro (modelo de revenda).
 3. Cobertura de encomendas na Admin API do PrestaShop 9 (spike).
 4. Mirakl Seller API ou Mirakl Connect (spike).
-5. Números do free tier, preços dos planos e valor do crédito.
+5. Números do free tier, preços dos planos e valor do crédito (hipótese do relatório na secção 4.7).
 6. Região do Supabase, versão major do Postgres e plano a contratar.
 7. Períodos de retenção por plano (RGPD), incluindo audit e transcrições de agentes.
+8. Termos Worten em vigor: versão do anexo XI, prazo de aceitação (24 horas nos termos de vendedor, 72 horas nos termos da conta online), limiares e número de suspensões até ao encerramento. Bloqueia os valores por omissão das regras (D13) e dos alertas (D28).
+9. O que acontece a uma linha da fila de exceções quando o prazo de aceitação se aproxima sem decisão humana (aceitar, recusar ou deixar expirar). BLOCKED na spec `mirakl-order-acceptance` até ser decidido.
+10. Valores por omissão das regras de aceitação: limiar de margem, stock mínimo, margem de segurança e o que conta como preço anómalo.
+11. Se a Mirakl Seller API expõe os indicadores oficiais do vendedor e a comissão por linha (spike do `mirakl-connector`).
+12. Validação com 10 a 20 vendedores Worten: encomendas e SKUs por mês, custo preenchido no PrestaShop, revenda de marcas já catalogadas, gestão manual no back office.
