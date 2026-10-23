@@ -4,11 +4,11 @@ Commit gate used at the end of each group: the `/commit` skill referenced by `op
 
 ## 1. Hermetic unit environment for apps/api
 
-- [ ] 1.1 test(api): apps/api: reproduce the baseline failure with no `.env` file in `apps/api`: `pnpm --filter api exec jest src/app.module.spec.ts` fails while importing `AppModule` with a Zod error listing the missing variables. Verify: failure output recorded in the change notes before any fix.
-- [ ] 1.2 test(api): apps/api: write `test/unit-env.spec.ts` (spec `unit-test-isolation`) covering: an unset key receives its placeholder; a key already set keeps its value; every placeholder connection value names a `.invalid` host; the placeholder map satisfies `apiEnvSchema`. Verify: the spec runs under the unit config once `roots` includes `test/`, and fails because the helper does not exist yet.
-- [ ] 1.3 fix(api): apps/api: implement `test/unit-env.ts` (placeholder map and pure apply function) and `test/unit-env.setup.ts`, and add `roots: ["<rootDir>", "<rootDir>/../test"]` and `setupFiles: ["<rootDir>/../test/unit-env.setup.ts"]` to the `jest` block in `package.json` (design D1). Verify: `test/unit-env.spec.ts` passes; `src/app.module.spec.ts` passes with no `.env` present; `pnpm --filter api test:cov` still meets the 80% thresholds.
-- [ ] 1.4 test(api): apps/api: confirm the integration config is unaffected: `pnpm --filter api exec jest -c test/jest-integration.json --listTests` lists only `*.integration.ts` files and its `setupFiles` still points only at `test/jest.setup.ts`. Verify: command output matches.
-- [ ] 1.5 fix(api): commit group 1 after the commit gate passes and the user approves. Verify: commit present on the branch.
+- [x] 1.1 test(api): apps/api: reproduce the baseline failure with no `.env` file in `apps/api`: `pnpm --filter api exec jest src/app.module.spec.ts` fails while importing `AppModule` with a Zod error listing the missing variables. Verify: failure output recorded in the change notes before any fix.
+- [x] 1.2 test(api): apps/api: write `test/unit-env.spec.ts` (spec `unit-test-isolation`) covering: an unset key receives its placeholder; a key already set keeps its value; every placeholder connection value names a `.invalid` host; the placeholder map satisfies `apiEnvSchema`. Verify: the spec runs under the unit config once `roots` includes `test/`, and fails because the helper does not exist yet.
+- [x] 1.3 fix(api): apps/api: implement `test/unit-env.ts` (placeholder map and pure apply function) and `test/unit-env.setup.ts`, and add `roots: ["<rootDir>", "<rootDir>/../test"]` and `setupFiles: ["<rootDir>/../test/unit-env.setup.ts"]` to the `jest` block in `package.json` (design D1). Verify: `test/unit-env.spec.ts` passes; `src/app.module.spec.ts` passes with no `.env` present; `pnpm --filter api test:cov` coverage is unchanged from the baseline measured before this change (criterion amended with the user: the 80% function threshold was already unmet, see notes.md 1.3).
+- [x] 1.4 test(api): apps/api: confirm the integration config is unaffected: `pnpm --filter api exec jest -c test/jest-integration.json --listTests` lists only `*.integration.ts` files and its `setupFiles` still points only at `test/jest.setup.ts`. Verify: command output matches.
+- [x] 1.5 fix(api): commit group 1 after the commit gate passes and the user approves. Verify: commit present on the branch.
 
 ## 2. Self-build before shared-types tests
 
@@ -33,3 +33,4 @@ Commit gate used at the end of each group: the `/commit` skill referenced by `op
 
 - Archive the change after review (`/opsx:archive`), which creates `openspec/specs/unit-test-isolation/spec.md`.
 - Reconcile the step order in `openspec/specs/github-actions-ci` with `.github/workflows/ci.yml` in a later change (recorded as a non-goal in proposal.md).
+- Bring `apps/api` function coverage back to 80%: unit tests for `src/customers/customers.controller.ts`, or the removal of the Customers reference slice when it is replaced (gap predates this change, see notes.md 1.3).

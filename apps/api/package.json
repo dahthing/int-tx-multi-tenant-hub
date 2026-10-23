@@ -72,6 +72,13 @@
       "ts"
     ],
     "rootDir": "src",
+    "roots": [
+      "<rootDir>",
+      "<rootDir>/../test"
+    ],
+    "setupFiles": [
+      "<rootDir>/../test/unit-env.setup.ts"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": [

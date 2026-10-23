@@ -1,0 +1,64 @@
+# Implementation notes
+
+Evidence recorded while applying the change, in task order.
+
+## 1.1 Baseline failure: apps/api without `.env`
+
+State: `apps/api` holds only `.env.example` and `.env.test`; no `.env`.
+
+Command: `pnpm --filter api exec jest src/app.module.spec.ts --runInBand`
+
+Result: the suite fails while `src/app.module.ts` is evaluated, before any test runs:
+
+```
+apps/api/src/app.module.ts:26
+    validate: (c) => env_1.apiEnvSchema.parse(c),
+
+ZodError: [
+  { "path": ["DATABASE_URL"], "message": "Invalid input: expected string, received undefined" },
+  { "path": ["REDIS_HOST"], "message": "Invalid input: expected string, received undefined" },
+  { "path": ["MONGO_URI"], "message": "Invalid input: expected string, received undefined" },
+  { "path": ["CORS_ORIGIN"], "message": "Invalid input: expected string, received undefined" },
+  { "path": ["FIELD_ENCRYPTION_KEY"], "message": "Invalid input: expected string, received undefined" },
+  { "path": ["FIELD_ENCRYPTION_HMAC_KEY"], "message": "Invalid input: expected string, received undefined" }
+]
+```
+
+The six keys match the required, non-defaulted keys of `apiEnvSchema` listed in design.md.
+
+## 1.2 Failing spec before the helper exists
+
+`roots` was added to the unit Jest config in this task, because the spec cannot run under the unit config without it. `setupFiles` and the helper come in 1.3.
+
+`pnpm --filter api exec jest --listTests` lists the seven existing `src/**/*.spec.ts` files plus `test/unit-env.spec.ts`; no `*.integration.ts` file is picked up.
+
+`pnpm --filter api exec jest test/unit-env.spec.ts`:
+
+```
+FAIL test/unit-env.spec.ts
+    Cannot find module './unit-env' from '../test/unit-env.spec.ts'
+Tests:       0 total
+```
+
+## 1.3 Helper, setup file and setupFiles
+
+With no `.env` in `apps/api`: `jest test/unit-env.spec.ts src/app.module.spec.ts` passes 9 of 9 tests.
+
+Coverage finding (pre-existing, outside this change): `pnpm --filter api test:cov` reports functions at 70% against an 80% threshold. The same 70% (14 of 20 functions) is reported on the code before this change, measured with a copied `.env.example` and without the new files. The gap is `src/customers/customers.controller.ts` (0% functions), which only the integration suite exercises. The CI workflow runs `pnpm test`, not `test:cov`, so the threshold is not enforced in CI today. The task's criterion "still meets the 80% thresholds" therefore cannot hold as written; this change leaves coverage unchanged (statements 92.3%, branches 84.6%, lines 91.2%). Decision (user, 23 Oct): amend the criterion to "coverage unchanged from baseline" and track the gap as a workflow follow-up in tasks.md.
+
+## 1.4 Integration config unaffected
+
+`pnpm --filter api exec jest -c test/jest-integration.json --listTests`:
+
+```
+test/audit.integration.ts
+test/customers.integration.ts
+```
+
+`test/jest-integration.json`: `setupFiles` is still only `<rootDir>/test/jest.setup.ts`; it declares no `roots`.
+
+## 1.5 Commit gate, group 1
+
+Node 24.15 (the repository pins 24.x in `.nvmrc`). From the repository root: `pnpm build` (12 of 12 tasks), `pnpm lint` (12 of 12, no files changed by `--fix`), `pnpm check-types` (12 of 12) and `pnpm test` (16 of 16) all exit 0.
+
+Production build check for the "Application bootstrap is unaffected" scenario: `find apps/api/dist -name 'unit-env*'` finds nothing, so the placeholders cannot reach a running app.
