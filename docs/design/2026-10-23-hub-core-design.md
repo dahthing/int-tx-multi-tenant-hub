@@ -1,0 +1,355 @@
+# Hub multi tenant para ecommerce: desenho do core
+
+Estado: em revisão
+Data: 2026-10-23
+Origem: sessão de brainstorming (perguntas, alternativas e decisões registadas abaixo)
+
+Este documento consolida o desenho do core do produto. Não é uma spec: cada bloco aqui descrito será transformado numa ou mais changes OpenSpec, com cenários, testes escritos antes do código e só depois implementação (ver secção 9).
+
+## 1. Visão e âmbito
+
+Um SaaS multi tenant para negócios de ecommerce, agnóstico ao ERP, à plataforma de ecommerce, ao marketplace e às plataformas de Ads. Princípios de partida:
+
+1. Agentic e IA first.
+2. SaaS com subscrições e free tier desde o primeiro dia.
+3. 2FA e RBAC multinível.
+4. Backoffice interno para gerir empresas, utilizadores, subscrições, packs, permissões, métricas, logs, créditos de IA, ligações a ERPs, marketplaces e ecommerces, e módulos por empresa.
+
+Módulos possíveis (não fazem parte do primeiro marco, exceto encomendas e métricas): dashboards e métricas customizadas, automações, PIM, WMS, integrações com ecommerce, marketplaces e ERPs, suporte, gestão de encomendas multicanal, Ads (Google Ads, Meta Ads, Google Analytics, Bing).
+
+### 1.1 Primeiro marco
+
+Core completo mais uma fatia vertical fina que o valida de ponta a ponta:
+
+1. Importar encomendas de **PrestaShop 9** e de **Mirakl (Worten)**.
+2. Painel de métricas de encomendas.
+3. Agente "Analista de encomendas" que responde a perguntas sobre os dados.
+4. Aceitar e recusar linhas de encomenda Mirakl a partir do hub, sempre com aprovação humana. É a primeira ação de escrita do produto.
+
+### 1.2 Fora do primeiro marco
+
+PIM, WMS, automações, suporte, Ads, ERPs, faturação grossista com pool de créditos partilhado, SSO/SAML, módulo PrestaShop próprio com eventos em tempo real.
+
+## 2. Base técnica
+
+O repositório parte do template `nestjs-angular-monorepo` (da equipa), importado com histórico completo (`main` v1.8.1 e `develop`), com o original como remote `upstream`.
+
+### 2.1 O que o template já resolve
+
+| Área | Estado |
+|---|---|
+| Stack | Turborepo + pnpm, NestJS 11, Angular 22 (signals, standalone), Tailwind 4 + Material, Prisma 7, Zod v4 partilhado |
+| Autenticação | Better Auth 1.7: email e password, verificação de email, reset, Google, 2FA TOTP e códigos de backup, plugin admin (ban, impersonation) |
+| Jobs | BullMQ com DLQ e API de gestão, painel de filas só leitura, cron, emails Brevo |
+| Audit | Audit log append only no MongoDB, com `expireAt` por documento, para autenticação, administração e escritas de negócio |
+| Observabilidade | Pino com correlation IDs, Prometheus, Grafana, Loki, Sentry, health probes |
+| Qualidade | Jest 30, testcontainers, factories, cobertura mínima de 80%, CI e releases |
+| Processo | OpenSpec com SDD obrigatório (spec, testes, código) e configuração Claude (agentes, comando `tdd`) |
+
+Verificado na importação: build verde, 572 testes unitários de backend e 163 de frontend a passar.
+
+### 2.2 O que falta e é o core do produto
+
+Multi tenancy, RBAC com âmbitos, parceiros, planos e entitlements, metering, billing, créditos de IA, runtime de agentes, framework de conectores, API keys, passkeys, MCP.
+
+### 2.3 Problemas conhecidos a corrigir na Fase 0
+
+1. `apps/api/src/app.module.spec.ts` depende de existir `.env` (o AppModule valida o ambiente ao ser importado). Num CI limpo falha.
+2. O contexto de `openspec/config.yaml` ainda descreve um template genérico; tem de passar a descrever o domínio do hub.
+3. Falta um `LICENSE` proprietário e uma nota de proveniência do template.
+
+### 2.4 Prova de conceito de RLS existente
+
+O branch `upstream/feature/rls-multi-tenant-poc` prova isolamento por RLS com Prisma 7 (10 testes de integração, incluindo fuga entre ligações do pool). Não foi fundido; o `forTenant` e o guard `assertRlsEnforceable` serão portados na change de isolamento. Lição principal: superusers e papéis com `BYPASSRLS` ignoram o RLS, e o papel do docker do template é superuser. A aplicação liga com um papel restrito; migrações e seeds usam o papel dono.
+
+## 3. Identidade, tenancy e permissões
+
+### 3.1 Hierarquia
+
+```
+Plataforma            staff interno, com papéis de plataforma
+  Parceiro            agência; acesso delegado a várias organizações
+  Organização         empresa cliente; unidade de isolamento e de faturação
+    Âmbitos           lojas, marcas, armazéns, canais
+      Recursos        encomendas, produtos, ligações, automações
+```
+
+### 3.2 Regras
+
+1. **Identidade global, pertença por organização.** Um login, várias organizações. Organização ativa na sessão (`activeOrganizationId` do plugin `organization` do Better Auth) e seletor na interface.
+2. **A organização é a fronteira de isolamento.** Todas as linhas de negócio têm `organization_id`. Duas camadas: extensão Prisma que injeta o tenant e RLS no Postgres como rede de segurança. O parceiro nunca é dono de dados: o que cria dentro de um cliente pertence ao cliente.
+3. **Parceiro com acesso delegado.** Concessão explícita, com papel máximo e âmbitos opcionais, revogável pelo owner da organização a qualquer momento. O admin do parceiro distribui clientes pela sua equipa dentro desse teto. O audit regista "via parceiro X".
+4. **Permissões `modulo:recurso:acao`** (por exemplo `orders:order:read`). Cada módulo declara as suas no código, de onde se gera o catálogo. Papéis de sistema como modelo (Owner, Admin, Gestor, Operador, Leitura), papéis custom conforme o plano, atribuições com âmbito opcional.
+5. **Três verificações em todas as ações** (UI, API pública e tools de agente):
+   1. Entitlement: o plano inclui este módulo ou funcionalidade?
+   2. Permissão: o principal tem a permissão neste âmbito?
+   3. Quota: o limite do período não foi atingido?
+   Implementado uma vez, num `AccessModule` com `can(principal, acao, recurso)`. Módulo fora do plano devolve 403 `entitlement_required`, mesmo a um Owner.
+6. **Tipos de principal:** utilizador; API key (conta de serviço de uma organização); agente invocado (herda o utilizador e fica ligado a um `run_id`); automação autónoma (conta de serviço com papel atribuído por um admin).
+7. **Staff da plataforma** com papéis próprios (super admin, suporte, billing, leitura). Acede a dados de tenants apenas por sessão de suporte, com motivo e limite de tempo, só leitura por omissão, auditada. 2FA obrigatório, preferencialmente passkey. Reaproveita a impersonation do plugin admin por baixo.
+8. **2FA:** TOTP e códigos de backup (existentes) mais passkeys. O owner pode exigir 2FA a todos os membros. Não é funcionalidade paga; o que se cobra no plano enterprise é SSO/SAML.
+
+### 3.3 Implementação
+
+1. Plugin `organization` do Better Auth (organizações, membros, convites, equipas, dynamic access control).
+2. Tabelas próprias para parceiros, acessos delegados, âmbitos e atribuições com âmbito.
+3. Permissões efetivas em cache no Redis por principal e organização, invalidadas por eventos.
+4. Sem OpenFGA nem SpiceDB por agora. A interface `can()` permite trocar mais tarde.
+
+## 4. Catálogo, entitlements, billing e créditos de IA
+
+Decisão: os dois modos de faturação existem desde o início (organização paga por si; parceiro paga pelos clientes). Nota registada: a recomendação inicial era começar só com o primeiro modo; o desenho contém o custo com a abstração de conta de faturação.
+
+### 4.1 Modelo
+
+```
+Plano (versões imutáveis)   módulos, features, limites por período
+Pack / add on               créditos de IA, conectores extra, módulos extra
+Override (backoffice)       ajuste por organização, com motivo e validade
+
+Conta de faturação  ──paga──▶  Subscrição  ──cobre──▶  Organização(ões)
+(da própria organização ou de um parceiro)
+```
+
+1. **Conta de faturação:** cada organização aponta para uma, a sua ou a de um parceiro. Stripe Customer e dados fiscais vivem aqui.
+2. **Planos versionados:** mudar preço ou limites cria nova versão; subscritores existentes mantêm a sua até migração explícita.
+3. **Entitlements efetivos** = versão do plano + packs + overrides, num `EntitlementsService` com cache no Redis invalidada por eventos.
+4. **Quotas:** contadores por período no Redis; fonte de verdade numa tabela de eventos de uso no Postgres, com chave de idempotência por evento.
+
+### 4.2 Stripe
+
+1. Catálogo nosso, sincronizado para o Stripe num só sentido. Não se usa o plugin Stripe do Better Auth.
+2. Organização que paga por si: uma subscrição por organização.
+3. Parceiro que paga: uma subscrição por parceiro, com uma linha por plano e quantidade (por exemplo "Pro × 7, Starter × 12"). O nosso sistema sabe que organização está em que plano. Fatura consolidada e independente do número de clientes do parceiro.
+4. Webhooks processados por fila, idempotentes pelo id do evento.
+
+### 4.3 Faturação legal com Moloni
+
+1. O Stripe cobra; a fatura legal sai do Moloni (software certificado pela AT). Emails de fatura do Stripe desligados.
+2. `invoice.paid` gera um job que cria uma Fatura Recibo no Moloni, com mapeamento `stripe_invoice_id` para o documento Moloni. Reembolso gera Nota de Crédito. Falhas vão para a DLQ com alerta.
+3. IVA coerente entre Stripe e Moloni: 23% continente, 22% Madeira, 16% Açores; autoliquidação B2B na UE com NIF válido; fora do âmbito fora da UE. Motivos de isenção a validar com o contabilista.
+
+### 4.4 Ciclo de vida
+
+1. Pagamento falhado: `past_due`, 7 dias de acesso total com aviso.
+2. Depois: `restricted`, só leitura, sincronizações e agentes em pausa.
+3. Aos 30 dias: `suspended`. Dados mantidos 90 dias, depois apagados segundo a política RGPD.
+4. Cancelamento: passa ao free tier; o excedente fica em pausa e só leitura, nunca apagado de imediato.
+5. Fim de parceria ou parceiro deixa de pagar: o acesso do parceiro é revogado e o cliente tem 14 dias de graça para definir um meio de pagamento próprio; sem isso, passa ao free tier. Os dados são sempre do cliente.
+
+### 4.5 Créditos de IA
+
+1. Carteira por organização, implementada como ledger de entradas e saídas.
+2. Entradas: créditos mensais do plano (expiram no fim do período), packs (12 meses), ofertas do backoffice. Consome primeiro o que expira mais cedo.
+3. Cada run de agente reserva créditos estimados antes de arrancar e liquida pelo real no fim. Sem saldo, não arranca.
+4. Cada chamada regista modelo, tokens de entrada, saída e cache, custo real em euros e créditos cobrados. Daqui sai a margem por tenant.
+5. Um crédito tem valor fixo para o cliente; a tabela de conversão por modelo é versionada.
+6. Parceiros podem comprar packs e atribuí los a um cliente. Pool partilhado fica para depois.
+
+### 4.6 Free tier (pontos de partida a afinar)
+
+| Limite | Free | Planos pagos |
+|---|---|---|
+| Lojas ligadas | 1 PrestaShop | várias lojas e canais |
+| Utilizadores | 2 | por plano |
+| Encomendas sincronizadas por mês | 300 | por plano, com excedente |
+| Frequência de sincronização | 60 min | até 5 min ou tempo real |
+| Histórico | 90 dias | completo |
+| Créditos de IA | poucos, limite duro | do plano, mais packs |
+| API keys e MCP | não | sim |
+
+Proteção contra abuso: email verificado, captcha no registo, limite de organizações grátis por pessoa.
+
+## 5. Modelo canónico e conectores
+
+### 5.1 Modelo canónico de encomendas
+
+1. Entidades: `Channel`, `Connection` (credenciais cifradas, estado, capacidades), `Order`, `OrderLine`, `Address`, `Shipment`, `OrderEvent` (linha temporal).
+2. Estados canónicos: `pending_acceptance`, `accepted`, `processing`, `shipped`, `delivered`, `cancelled`, `refunded`. O estado original é sempre guardado.
+3. Unicidade por (`connection_id`, `external_id`): ressincronizar atualiza, nunca duplica.
+4. Valores em cêntimos, com moeda e impostos explícitos.
+5. Payload original em JSONB e campos específicos do canal em `attributes`, separados por conector.
+6. Dados pessoais cifrados com o `EncryptionService` do template; retenção por plano; remoção RGPD como operação de primeira classe.
+7. Métricas a partir de agregados diários por organização, canal e dia. O agente usa tools de consulta tipadas; não há geração de SQL livre.
+
+### 5.2 Framework de conectores
+
+1. Cada conector declara: manifesto com versão e capacidades (`orders.read`, `orders.accept`, ...), tipo de autenticação, `listChangedOrders(cursor)`, `getOrder(id)`, função pura `mapOrder(raw)`, ações de escrita.
+2. Motor de sincronização genérico: agendamento por ligação conforme o plano, cursor persistido, importação inicial com profundidade conforme o plano, rate limit por ligação, retries com backoff, DLQ, estado "precisa de reautenticação" em falhas de credenciais.
+
+### 5.3 PrestaShop 9
+
+1. Admin API com OAuth e scopes por entidade (`order_read`, ...). Não está confirmado que expõe encomendas; o Webservice antigo continua no PrestaShop 9 e cobre encomendas.
+2. A change começa com uma spike contra PrestaShop 9 em Docker para confirmar a cobertura e gravar fixtures. Se a Admin API não chegar, o conector usa o Webservice para encomendas.
+3. Sem webhooks nativos: polling incremental pela data de atualização. Mais tarde, módulo próprio com eventos em tempo real (também canal de aquisição na PrestaShop Addons).
+
+### 5.4 Mirakl (Worten)
+
+1. Seller API com API key por marketplace; a spike compara com a Mirakl Connect.
+2. Encomendas chegam em `WAITING_ACCEPTANCE` e têm de ser aceites (OR21) dentro do prazo, sob pena de cancelamento automático. Por isso a aceitação e a recusa entram no primeiro marco, com aprovação humana.
+
+### 5.5 Testes de conectores
+
+Testes de mapeamento orientados por tabelas a partir de fixtures reais anonimizadas; conector falso para testar o core sem rede; testes de contrato contra mock gerado do OpenAPI da Mirakl; execução noturna contra PrestaShop 9 em Docker.
+
+## 6. Runtime de agentes
+
+### 6.1 Abordagem
+
+Claude API com o Tool Runner do SDK TypeScript (`@anthropic-ai/sdk`), a correr nos nossos workers. Managed Agents não serve (loop e sandbox na infraestrutura da Anthropic, quando as tools precisam do contexto do tenant no nosso processo). Agent SDK não serve (harness orientado a código e ficheiros).
+
+### 6.2 Componentes
+
+1. **Registo de tools:** cada módulo declara tools com schemas Zod, com permissão e entitlement exigidos, nível de risco (leitura, escrita reversível, escrita irreversível) e se expõe dados pessoais. As tools chamam os mesmos serviços que os controllers REST.
+2. **Execução:** `AgentRun` com organização, principal, orçamento e estado. Cada chamada de tool passa pelas três verificações e fica no audit com o `run_id`. O isolamento é garantido pelos serviços e pelo RLS, nunca por instrução ao modelo.
+3. **Aprovações:** tool de escrita pausa o run e cria um pedido de aprovação (ação proposta, impacto, prazo). O utilizador aprova ou recusa; o job retoma a partir do histórico guardado. Escritas irreversíveis nunca correm sem aprovação no MVP.
+4. **Streaming:** worker publica eventos no Redis; a API expõe SSE por run; o Angular consome com signals. O estado é persistido.
+5. **Encaminhamento multi modelo** (decisão do produto):
+
+   | Rota | Modelo | Effort inicial |
+   |---|---|---|
+   | Classificação e extração (volume) | `claude-haiku-5-5` | baixo |
+   | Analista conversacional | `claude-sonnet-5-5` | médio |
+   | Análises complexas e planeamento | `claude-opus-5-5` | alto |
+
+   Regras: o modelo escolhe se no início do run e nunca muda a meio (raciocínio e cache estão presos ao modelo); cada rota tem evals próprios; a tabela de créditos tem conversão por modelo. Preços de referência por milhão de tokens (entrada/saída): Opus 5.5 $4/$20, Sonnet 5.5 $2/$10, Haiku 5.5 $0,10/$0,50.
+6. **Prompt caching:** prefixo estável (tools em ordem determinística, system prompt fixo), contexto do tenant depois do ponto de cache, prefixos agrupados por plano.
+7. **Orçamento:** reserva de créditos, `task_budget` para o modelo gerir o esforço, corte duro por turno, número máximo de turnos.
+8. **Segurança:** tratar `stop_reason: refusal`; fallback do lado do servidor em Opus e Sonnet; no Haiku, nova tentativa feita por nós com Sonnet. Texto externo entra marcado como dados. O agente nunca vê credenciais.
+9. **Dados pessoais:** API da Anthropic diretamente, com DPA e tools que enviam o mínimo de dados pessoais. Adaptador de fornecedor preparado para Bedrock ou Vertex numa região da UE se um cliente o exigir.
+10. **Evals:** tools com testes unitários normais; comportamento dos agentes avaliado com conjuntos fixos de perguntas sobre fixtures, em execução noturna.
+11. **MCP:** servidor MCP por organização nos planos pagos, autenticado por API key com scopes, sobre o mesmo registo de tools e as mesmas verificações.
+12. **Filas:** agentes e sincronizações em filas separadas, com limite de concorrência por organização.
+
+### 6.3 Primeiro agente
+
+"Analista de encomendas": pesquisar encomendas, ver encomenda, séries de métricas, comparação entre canais; com aprovação, aceitar ou recusar linhas Mirakl.
+
+## 7. Backoffice, aplicação de cliente, audit e observabilidade
+
+### 7.1 Duas aplicações Angular
+
+1. **Aplicação de cliente** (nova): onboarding, ligações, encomendas, métricas, agente, faturação, membros e permissões.
+2. **Backoffice interno** (evolução do `apps/web` atual): subdomínio próprio, só staff, 2FA obrigatório.
+3. Componentes partilhados num pacote de UI do monorepo.
+
+Motivo: postura de segurança diferente e superfície de ataque menor no backoffice.
+
+### 7.2 Backoffice: conteúdos
+
+Empresas e parceiros; utilizadores; subscrições, planos, packs e overrides; catálogo de permissões e papéis de sistema; módulos por empresa; ligações por empresa (ecommerce, marketplaces, ERPs) com estado e atraso de sincronização; créditos de IA por empresa (ledger, consumo, custo real); métricas de negócio (MRR, churn, uso, **margem por tenant**); logs e audit; runs de agentes; sessões de suporte.
+
+### 7.3 Audit
+
+O audit existente no MongoDB passa a ter `organizationId`, tipo de ator (utilizador, API key, agente, staff, via parceiro), `run_id` e retenção dependente do plano (via `expireAt`). Os admins de cada organização veem o audit da sua organização; o staff vê tudo.
+
+### 7.4 Observabilidade
+
+Sobre a stack existente: métricas de atraso de sincronização por ligação, profundidade de filas, custo por run de agente, consumo de créditos. Alertas: falhas Moloni, crescimento da DLQ, falhas de autenticação de ligações.
+
+## 8. Alojamento (VPS com Docker)
+
+1. Docker Compose de produção num VPS na UE: nginx com TLS, api, workers (sincronização, agentes, geral), cron, Postgres, Redis com AOF, MongoDB, stack de observabilidade.
+2. Postgres com papel dono para migrações e papel restrito para a aplicação (guard de arranque ativo).
+3. Backups com recuperação para um ponto no tempo enviados para object storage, e um ensaio de reposição mensal.
+4. Escala: mais containers de worker; depois, workers num segundo VPS.
+5. Recomendação registada: a base de dados é o componente mais arriscado de operar sozinho. Ponderar Postgres gerido na UE, mantendo o resto no VPS.
+
+## 9. Processo: Spec Driven Development com testes primeiro
+
+1. Cada change OpenSpec segue: proposta, spec com cenários (WHEN/THEN), testes escritos a partir dos cenários e a falhar, implementação, verificação, arquivo.
+2. Nenhum código de produção sem o teste que o exige escrito antes. Comportamento não decidido fica marcado como BLOCKED, nunca especificado.
+3. Suites obrigatórias:
+   1. Isolamento entre tenants gerado a partir do schema: um modelo novo com `organization_id` e sem RLS faz falhar o CI.
+   2. Matriz de permissões (papel × ação × âmbito) em tabela.
+   3. Máquina de estados do billing.
+   4. Invariantes do ledger de créditos com testes por propriedades (saldo nunca negativo, reservas sempre liquidadas).
+   5. Webhooks Stripe com fixtures gravadas e testes de idempotência.
+   6. Mapeamentos de conectores orientados por tabelas.
+   7. Evals dos agentes (noturnos).
+4. Cobertura mínima de 80% mantida; 90% recomendado em acesso, billing e créditos.
+
+## 10. Roadmap de changes (desenvolvimento a solo com Claude)
+
+Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicável, testes). Ordem proposta:
+
+### Marco 0: fundação
+
+1. `fix-ci-baseline`: testes independentes de `.env`, contexto OpenSpec do domínio, LICENSE e proveniência.
+2. `consolidate-runtime`: juntar api, auth e notifications numa só app NestJS modular; manter worker e cron como processos separados; remover a chamada RPC de autenticação por pedido. (A confirmar.)
+3. `split-web-apps`: aplicação de cliente e backoffice, com pacote de UI partilhado.
+
+### Marco 1: identidade e tenancy
+
+1. `organizations-and-membership`
+2. `tenant-isolation-rls`
+3. `access-control`
+4. `partners-and-delegated-access`
+5. `platform-staff-and-support-sessions` (inclui passkeys e política de 2FA)
+6. `api-keys`
+
+### Marco 2: monetização (antes do lançamento público)
+
+1. `plan-catalog-and-entitlements`
+2. `usage-metering-and-quotas`
+3. `ai-credits-ledger`
+4. `billing-accounts-and-stripe`
+5. `partner-billing`
+6. `moloni-invoicing`
+7. `subscription-lifecycle` (estados de cobrança, downgrade, fim de parceria)
+
+### Marco 3: conectores e encomendas
+
+1. `connector-framework` (com conector falso)
+2. `canonical-orders`
+3. `prestashop9-connector` (começa com spike)
+4. `mirakl-connector` (começa com spike Seller API vs Connect)
+5. `order-metrics`
+6. `mirakl-order-acceptance` (escrita com aprovação)
+
+### Marco 4: agentes
+
+1. `agent-runtime` (registo de tools, runs, encaminhamento de modelos, reserva de créditos, SSE)
+2. `agent-approvals`
+3. `orders-analyst-agent` (com evals)
+4. `mcp-server`
+
+Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Stripe e do Moloni, para validar a fatia vertical com utilizadores free mais cedo, mantendo entitlements e quotas desde o início.
+
+## 11. Registo de decisões
+
+| # | Decisão | Estado |
+|---|---|---|
+| D1 | Template da equipa como base, importado com histórico e `upstream` | Decidido |
+| D2 | Vender a lojas diretas e a agências/parceiros | Decidido |
+| D3 | Hierarquia Plataforma, Parceiro, Organização, Âmbitos | Proposto |
+| D4 | Isolamento por `organization_id` com extensão Prisma e RLS; app com papel restrito | Proposto |
+| D5 | RBAC `modulo:recurso:acao` com âmbitos; três verificações numa só função `can()` | Proposto |
+| D6 | Staff só acede a tenants por sessão de suporte auditada | Proposto |
+| D7 | 2FA não é funcionalidade paga; SSO/SAML no enterprise | Proposto |
+| D8 | Dois modos de faturação desde o início, com conta de faturação | Decidido |
+| D9 | Stripe para cobrar, Moloni para faturação legal | Decidido |
+| D10 | Créditos de IA da plataforma com ledger, reserva e liquidação | Decidido |
+| D11 | Fim de parceria: cliente passa a pagar por si, 14 dias de graça | Decidido |
+| D12 | Primeira fatia: encomendas e métricas com PrestaShop 9 e Mirakl | Decidido |
+| D13 | Aceitar e recusar encomendas Mirakl com aprovação no primeiro marco | Decidido |
+| D14 | Claude API com Tool Runner nos nossos workers | Proposto |
+| D15 | Multi modelo desde o início, modelo fixo por run | Decidido |
+| D16 | API Anthropic direta com minimização de dados pessoais e DPA | Decidido |
+| D17 | Sem SQL livre gerado pelo agente; tools de consulta tipadas | Proposto |
+| D18 | Manter MongoDB para audit e logs | Proposto |
+| D19 | Consolidar runtime num monólito modular mais workers | A confirmar |
+| D20 | Duas aplicações Angular (cliente e backoffice) | Proposto |
+| D21 | Alojamento em VPS com Docker na UE | Decidido |
+| D22 | Documentos de produto em português; specs OpenSpec e código em inglês | A confirmar |
+
+## 12. Questões em aberto
+
+1. API do Moloni: documentação oficial, autenticação e tipos de documento (confirmar antes da spec `moloni-invoicing`).
+2. Motivos de isenção de IVA e regras fiscais (contabilista).
+3. Cobertura de encomendas na Admin API do PrestaShop 9 (spike).
+4. Mirakl Seller API ou Mirakl Connect (spike).
+5. Números do free tier, preços dos planos e valor do crédito.
+6. Postgres gerido ou no VPS.
+7. Períodos de retenção por plano (RGPD), incluindo transcrições de agentes.
+8. Confirmar D19 (consolidação do runtime) e D22 (línguas).
