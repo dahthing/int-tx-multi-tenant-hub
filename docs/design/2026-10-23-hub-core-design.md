@@ -309,7 +309,7 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 
 1. `fix-ci-baseline`: testes independentes de `.env`, contexto OpenSpec do domínio, LICENSE e proveniência.
 2. `remove-mongo-dependency`: audit para Postgres append only, logs HTTP e de email para o pino, remoção do `MONGO_URI` e do `MongoModule` (ver 7.3).
-3. `consolidate-runtime`: juntar api, auth e notifications numa só app NestJS modular; manter worker e cron como processos separados; remover a chamada RPC de autenticação por pedido. (A confirmar.)
+3. `consolidate-runtime`: juntar api, auth e notifications numa só app NestJS modular; manter worker e cron como processos separados; remover a chamada RPC de autenticação por pedido.
 4. `split-web-apps`: aplicação de cliente e backoffice, com pacote de UI partilhado.
 
 ### Marco 1: identidade e tenancy
@@ -321,15 +321,11 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 5. `platform-staff-and-support-sessions` (inclui passkeys e política de 2FA)
 6. `api-keys`
 
-### Marco 2: monetização (antes do lançamento público)
+### Marco 2: planos e limites (o free tier funciona desde aqui)
 
 1. `plan-catalog-and-entitlements`
 2. `usage-metering-and-quotas`
 3. `ai-credits-ledger`
-4. `billing-accounts-and-stripe`
-5. `partner-billing`
-6. `moloni-invoicing`
-7. `subscription-lifecycle` (estados de cobrança, downgrade, fim de parceria)
 
 ### Marco 3: conectores e encomendas
 
@@ -347,7 +343,14 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 3. `orders-analyst-agent` (com evals)
 4. `mcp-server`
 
-Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Stripe e do Moloni, para validar a fatia vertical com utilizadores free mais cedo, mantendo entitlements e quotas desde o início.
+### Marco 5: cobrança (antes de abrir os planos pagos)
+
+1. `billing-accounts-and-stripe`
+2. `partner-billing`
+3. `moloni-invoicing`
+4. `subscription-lifecycle` (estados de cobrança, downgrade, fim de parceria)
+
+Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o free tier funcionar com limites reais; a cobrança (Stripe e Moloni) vem depois da fatia vertical, para validar o produto com utilizadores free mais cedo.
 
 ## 11. Registo de decisões
 
@@ -371,10 +374,10 @@ Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Strip
 | D16 | API Anthropic direta com minimização de dados pessoais e DPA | Decidido |
 | D17 | Sem SQL livre gerado pelo agente; tools de consulta tipadas | Proposto |
 | D18 | MongoDB em standby: audit em Postgres append only, logs HTTP e de email no pino e Loki | Decidido |
-| D19 | Consolidar runtime num monólito modular mais workers | A confirmar |
+| D19 | Consolidar runtime num monólito modular mais workers | Decidido |
 | D20 | Duas aplicações Angular (cliente e backoffice) | Proposto |
 | D21 | Aplicações em VPS com Docker na UE | Decidido |
-| D22 | Documentos de produto em português; specs OpenSpec e código em inglês | A confirmar |
+| D22 | Documentos de produto em português; specs OpenSpec, código e commits em inglês | Decidido |
 | D23 | Postgres no Supabase (UE) no MVP, só como Postgres gerido; Postgres interno depois | Decidido |
 | D24 | Data API do Supabase desligada; app com papel restrito sem `BYPASSRLS` | Proposto |
 | D25 | Testes de integração contra Postgres oficial na mesma versão major, para garantir portabilidade | Proposto |
@@ -388,4 +391,3 @@ Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Strip
 5. Números do free tier, preços dos planos e valor do crédito.
 6. Região do Supabase, versão major do Postgres e plano a contratar.
 7. Períodos de retenção por plano (RGPD), incluindo audit e transcrições de agentes.
-8. Confirmar D19 (consolidação do runtime) e D22 (línguas).
