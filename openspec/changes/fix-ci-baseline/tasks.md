@@ -12,9 +12,9 @@ Commit gate used at the end of each group: the `/commit` skill referenced by `op
 
 ## 2. Self-build before shared-types tests
 
-- [ ] 2.1 test(shared-types): packages/shared-types: reproduce the failure from a state with no build output: remove `packages/shared-types/dist`, run `pnpm turbo run test --filter=@repo/shared-types --force`, and confirm `src/entry-points.spec.ts` fails because `./dist/index.js` is missing. This existing spec is the failing test for the `unit-test-isolation` requirement "Unit tests pass without a prior build". Verify: failure output recorded.
-- [ ] 2.2 build(shared-types): packages/shared-types: add `turbo.json` with `"extends": ["//"]` and `tasks.test.dependsOn: ["^build", "build"]` (design D2). Verify: the command from 2.1 now passes from the same clean state, and `pnpm turbo run test --filter=@repo/shared-types --dry=json` shows `@repo/shared-types#build` as a dependency of `@repo/shared-types#test`.
-- [ ] 2.3 build(shared-types): commit group 2 after the commit gate passes and the user approves. Verify: commit present on the branch.
+- [x] 2.1 test(shared-types): packages/shared-types: reproduce the failure from a state with no build output: remove `packages/shared-types/dist`, run `pnpm turbo run test --filter=@repo/shared-types --force`, and confirm `src/entry-points.spec.ts` fails because `./dist/index.js` is missing. This existing spec is the failing test for the `unit-test-isolation` requirement "Unit tests pass without a prior build". Verify: failure output recorded.
+- [x] 2.2 build(shared-types): packages/shared-types: add `turbo.json` with `"extends": ["//"]` and `tasks.test.dependsOn: ["^build", "build"]` (design D2). Verify: the command from 2.1 now passes from the same clean state, and `pnpm turbo run test --filter=@repo/shared-types --dry=json` shows `@repo/shared-types#build` as a dependency of `@repo/shared-types#test`.
+- [x] 2.3 build(shared-types): commit group 2 after the commit gate passes and the user approves. Verify: commit present on the branch.
 
 ## 3. Repository identity
 

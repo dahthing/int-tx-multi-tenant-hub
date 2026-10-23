@@ -62,3 +62,31 @@ test/customers.integration.ts
 Node 24.15 (the repository pins 24.x in `.nvmrc`). From the repository root: `pnpm build` (12 of 12 tasks), `pnpm lint` (12 of 12, no files changed by `--fix`), `pnpm check-types` (12 of 12) and `pnpm test` (16 of 16) all exit 0.
 
 Production build check for the "Application bootstrap is unaffected" scenario: `find apps/api/dist -name 'unit-env*'` finds nothing, so the placeholders cannot reach a running app.
+
+## 2.1 shared-types fails without its own build
+
+`rm -rf packages/shared-types/dist`, then `pnpm turbo run test --filter=@repo/shared-types --force`:
+
+```
+FAIL src/entry-points.spec.ts
+  ● package entry points › ./dist/index.js exists on disk
+  ● package entry points › ./dist/index.js imports without throwing
+Tests:       2 failed, 100 passed, 102 total
+Tasks:    0 successful, 1 total
+```
+
+The task graph runs no build first: the root `turbo.json` makes `test` depend on `^build` (dependencies only), and `@repo/shared-types` has no workspace dependencies to build.
+
+## 2.2 Package-level turbo.json
+
+After adding `packages/shared-types/turbo.json`, the same sequence (`rm -rf packages/shared-types/dist`, then `pnpm turbo run test --filter=@repo/shared-types --force`) runs `@repo/shared-types:build` first and ends with `Tests: 102 passed, 102 total`, `Tasks: 2 successful, 2 total`.
+
+`turbo run test --filter=@repo/shared-types --dry=json`:
+
+```
+@repo/shared-types#build <- ['@repo/shared-types#db:generate']
+@repo/shared-types#db:generate <- []
+@repo/shared-types#test <- ['@repo/shared-types#build']
+```
+
+(`pnpm turbo ... --dry=json` prints a pnpm engine warning before the JSON in this environment; the binary under `node_modules/.bin/turbo` gives clean JSON.)
