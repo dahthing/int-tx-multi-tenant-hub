@@ -96,3 +96,23 @@ After adding `packages/shared-types/turbo.json`, the same sequence (`rm -rf pack
 - `LICENSE`: proprietary notice, "Copyright (c) 2026 TargX. All rights reserved.", no permissions granted.
 - `NOTICE`: names the template, `main` at `v1.8.1` and `develop` at `45d1c79`, tracked as `upstream`. Checked against the merged history: `git rev-parse --short upstream/develop` prints `45d1c79`; `git merge-base --is-ancestor` confirms both `v1.8.1` and `45d1c79` are ancestors of the branch head.
 - `openspec/config.yaml`: only the `Domain` block changed. `openspec instructions proposal --change fix-ci-baseline --json` exits 0 and contains the new Domain text ("Multi-tenant SaaS hub for ecommerce...") and no longer the old one; `openspec context --json` exits 0.
+
+## 4.1 Clean-clone smoke test
+
+Fresh clone of the branch at `aea586c` (same commit as `origin`) in a scratch directory, Node 24.15. Before testing: no `.env` file anywhere and no `dist` directory in any workspace. `pnpm install --frozen-lockfile` and `pnpm db:generate` exit 0. `pnpm test` exits 0 with `Tasks: 16 successful, 16 total`:
+
+```
+@repo/shared-types  102 passed     @repo/database   7 passed
+@repo/shared        248 passed     @repo/mail      11 passed
+api                  52 passed     auth           111 passed
+worker               34 passed     notifications   13 passed
+cron                  2 passed     web       29 test files passed
+```
+
+## 4.2 CI sequence in the clean clone
+
+Same clone, steps from `.github/workflows/ci.yml` in order: `pnpm install --frozen-lockfile`, `pnpm db:generate` (1 of 1), `pnpm build` (12 of 12), `pnpm lint` (12 of 12), `pnpm check-types` (12 of 12), `pnpm test` (16 of 16). Every step exits 0, and `git status` is clean afterwards, so `lint --fix` changed nothing.
+
+## 4.3 Strict validation
+
+`openspec validate fix-ci-baseline --strict`: "Change 'fix-ci-baseline' is valid", exit 0.

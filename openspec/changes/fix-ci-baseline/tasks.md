@@ -25,9 +25,9 @@ Commit gate used at the end of each group: the `/commit` skill referenced by `op
 
 ## 4. Integration verification
 
-- [ ] 4.1 chore: clean-clone smoke test: clone the branch into a scratch directory, run `pnpm install --frozen-lockfile` and `pnpm db:generate`, then `pnpm test` with no `.env` file and no prior build. Verify: every workspace's unit suite passes (spec `unit-test-isolation`, scenario "Clean checkout with no env files").
-- [ ] 4.2 chore: in the same clean clone, run the CI quality-gate sequence from `.github/workflows/ci.yml` (install, `db:generate`, build, lint, check-types, test). Verify: every step exits 0.
-- [ ] 4.3 chore: `openspec validate fix-ci-baseline --strict` passes. Verify: command exits 0.
+- [x] 4.1 chore: clean-clone smoke test: clone the branch into a scratch directory, run `pnpm install --frozen-lockfile` and `pnpm db:generate`, then `pnpm test` with no `.env` file and no prior build. Verify: every workspace's unit suite passes (spec `unit-test-isolation`, scenario "Clean checkout with no env files").
+- [x] 4.2 chore: in the same clean clone, run the CI quality-gate sequence from `.github/workflows/ci.yml` (install, `db:generate`, build, lint, check-types, test). Verify: every step exits 0.
+- [x] 4.3 chore: `openspec validate fix-ci-baseline --strict` passes. Verify: command exits 0.
 
 ## Workflow follow-up
 
