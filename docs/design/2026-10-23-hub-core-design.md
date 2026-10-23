@@ -111,25 +111,38 @@ Conta de faturação  ──paga──▶  Subscrição  ──cobre──▶  O
 (da própria organização ou de um parceiro)
 ```
 
-1. **Conta de faturação:** cada organização aponta para uma, a sua ou a de um parceiro. Stripe Customer e dados fiscais vivem aqui.
+1. **Conta de faturação:** cada organização aponta para uma, a sua ou a de um parceiro. Os dados fiscais (NIF, morada) e o token do meio de pagamento vivem aqui.
 2. **Planos versionados:** mudar preço ou limites cria nova versão; subscritores existentes mantêm a sua até migração explícita.
 3. **Entitlements efetivos** = versão do plano + packs + overrides, num `EntitlementsService` com cache no Redis invalidada por eventos.
 4. **Quotas:** contadores por período no Redis; fonte de verdade numa tabela de eventos de uso no Postgres, com chave de idempotência por evento.
 
-### 4.2 Stripe
+### 4.2 Motor de subscrições interno
 
-1. Catálogo nosso, sincronizado para o Stripe num só sentido. Não se usa o plugin Stripe do Better Auth.
-2. Organização que paga por si: uma subscrição por organização.
-3. Parceiro que paga: uma subscrição por parceiro, com uma linha por plano e quantidade (por exemplo "Pro × 7, Starter × 12"). O nosso sistema sabe que organização está em que plano. Fatura consolidada e independente do número de clientes do parceiro.
-4. Webhooks processados por fila, idempotentes pelo id do evento.
+Decisão: o sistema de subscrições é nosso. Os fornecedores de pagamento e de faturação são adaptadores trocáveis: Easypay e faturação manual no MVP, Stripe e Moloni no futuro se fizer sentido.
 
-### 4.3 Faturação legal com Moloni
+1. **Entidades:** `BillingAccount`, `Subscription` (versão do plano, linhas com quantidade, período atual, estado), `Charge` (valor de um período: linhas, excedentes de uso, prorata, IVA), `Payment` (transação no fornecedor), `InvoiceRecord` (documento legal emitido).
+2. **Renovação:** um job do cron fecha cada período, calcula o valor seguinte e pede a cobrança ao adaptador de pagamento.
+3. **Mudanças de plano:** upgrade com efeito imediato e cobrança da diferença em prorata por dias; downgrade no fim do período.
+4. **Parceiro que paga:** uma subscrição por parceiro, com uma linha por plano e quantidade (por exemplo "Pro × 7, Starter × 12"). O nosso sistema sabe que organização está em que plano. Uma cobrança e um documento por período, independentemente do número de clientes.
+5. **IVA calculado por nós**, para cobrar o valor certo: 23% continente, 22% Madeira, 16% Açores; autoliquidação B2B na UE com NIF válido; fora do âmbito fora da UE. Regras e motivos de isenção a validar com o contabilista.
+6. **Interfaces:** `PaymentProvider` (tokenizar meio de pagamento, cobrar um valor, consultar transação, validar notificação) e `InvoicingProvider` (emitir documento, anular, nota de crédito). Testes de contrato iguais para qualquer implementação.
 
-1. O Stripe cobra; a fatura legal sai do Moloni (software certificado pela AT). Emails de fatura do Stripe desligados.
-2. `invoice.paid` gera um job que cria uma Fatura Recibo no Moloni, com mapeamento `stripe_invoice_id` para o documento Moloni. Reembolso gera Nota de Crédito. Falhas vão para a DLQ com alerta.
-3. IVA coerente entre Stripe e Moloni: 23% continente, 22% Madeira, 16% Açores; autoliquidação B2B na UE com NIF válido; fora do âmbito fora da UE. Motivos de isenção a validar com o contabilista.
+### 4.3 Pagamentos com Easypay
 
-### 4.4 Ciclo de vida
+1. **Pagamentos frequentes** (cliente tokenizado no Checkout e valores variáveis cobrados pela Payments API) são o encaixe certo, porque o valor muda entre períodos (prorata, quantidades do parceiro, excedentes). As subscrições nativas da Easypay são de valor fixo e só aceitam cartão e débito direto.
+2. **Métodos:** débito direto e cartão como recorrentes preferidos; MB WAY e Multibanco disponíveis nos pagamentos frequentes, sendo que uma referência Multibanco depende de o cliente pagar e alimenta o fluxo de cobrança em atraso.
+3. **Notificações:** recebidas por fila, idempotentes, e sempre confirmadas consultando a transação na API antes de mudar qualquer estado.
+4. A confirmar no contrato com a Easypay: métodos ativos para pagamentos frequentes, limites mínimos e máximos, fluxo do mandato de débito direto.
+
+### 4.4 Faturação manual no MVP
+
+1. Cada pagamento confirmado cria uma **fatura por emitir** numa fila do backoffice, com os dados do cliente, as linhas e o IVA já calculados.
+2. Quem fatura emite o documento no software certificado e regista no backoffice o número, a data e o PDF. O cliente vê os seus documentos na aplicação.
+3. **Prazo legal:** em regra, a fatura sai até ao 5.º dia útil seguinte ao momento em que o imposto é devido; num pagamento recebido antes da prestação (subscrição paga adiantada), deve sair na data do recebimento. A fila mostra o prazo de cada fatura e alerta antes de expirar. Regras a confirmar com o contabilista.
+4. **Destinatário da fatura no modo parceiro:** a fatura emite se ao destinatário dos serviços, independentemente de quem paga. O modelo contratual proposto é de revenda: o parceiro contrata connosco e é o destinatário; ele fatura os seus clientes. A validar com o contabilista e refletir nos termos de serviço.
+5. **Limite deste modo:** funciona com dezenas de faturas por mês. O gatilho para o adaptador Moloni (ou outro software certificado com API) é o volume, ou o prazo começar a falhar.
+
+### 4.5 Ciclo de vida
 
 1. Pagamento falhado: `past_due`, 7 dias de acesso total com aviso.
 2. Depois: `restricted`, só leitura, sincronizações e agentes em pausa.
@@ -137,7 +150,7 @@ Conta de faturação  ──paga──▶  Subscrição  ──cobre──▶  O
 4. Cancelamento: passa ao free tier; o excedente fica em pausa e só leitura, nunca apagado de imediato.
 5. Fim de parceria ou parceiro deixa de pagar: o acesso do parceiro é revogado e o cliente tem 14 dias de graça para definir um meio de pagamento próprio; sem isso, passa ao free tier. Os dados são sempre do cliente.
 
-### 4.5 Créditos de IA
+### 4.6 Créditos de IA
 
 1. Carteira por organização, implementada como ledger de entradas e saídas.
 2. Entradas: créditos mensais do plano (expiram no fim do período), packs (12 meses), ofertas do backoffice. Consome primeiro o que expira mais cedo.
@@ -146,7 +159,7 @@ Conta de faturação  ──paga──▶  Subscrição  ──cobre──▶  O
 5. Um crédito tem valor fixo para o cliente; a tabela de conversão por modelo é versionada.
 6. Parceiros podem comprar packs e atribuí los a um cliente. Pool partilhado fica para depois.
 
-### 4.6 Free tier (pontos de partida a afinar)
+### 4.7 Free tier (pontos de partida a afinar)
 
 | Limite | Free | Planos pagos |
 |---|---|---|
@@ -256,7 +269,7 @@ Infraestrutura resultante no MVP: Supabase (Postgres) e, no VPS, Redis e as apli
 
 ### 7.4 Observabilidade
 
-Sobre a stack existente: métricas de atraso de sincronização por ligação, profundidade de filas, custo por run de agente, consumo de créditos. Alertas: falhas Moloni, crescimento da DLQ, falhas de autenticação de ligações.
+Sobre a stack existente: métricas de atraso de sincronização por ligação, profundidade de filas, custo por run de agente, consumo de créditos. Alertas: faturas por emitir perto do prazo, cobranças falhadas, crescimento da DLQ, falhas de autenticação de ligações.
 
 ## 8. Alojamento
 
@@ -296,7 +309,8 @@ Mais containers de worker; depois, workers num segundo VPS.
    2. Matriz de permissões (papel × ação × âmbito) em tabela.
    3. Máquina de estados do billing.
    4. Invariantes do ledger de créditos com testes por propriedades (saldo nunca negativo, reservas sempre liquidadas).
-   5. Webhooks Stripe com fixtures gravadas e testes de idempotência.
+   5. Notificações Easypay com fixtures gravadas e testes de idempotência; testes de contrato comuns a todos os adaptadores de pagamento e de faturação.
+   6. Cálculo de valores (prorata, quantidades, IVA) com testes por propriedades e tabelas de casos.
    6. Mapeamentos de conectores orientados por tabelas.
    7. Evals dos agentes (noturnos).
 4. Cobertura mínima de 80% mantida; 90% recomendado em acesso, billing e créditos.
@@ -345,12 +359,15 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 
 ### Marco 5: cobrança (antes de abrir os planos pagos)
 
-1. `billing-accounts-and-stripe`
-2. `partner-billing`
-3. `moloni-invoicing`
-4. `subscription-lifecycle` (estados de cobrança, downgrade, fim de parceria)
+1. `billing-engine` (contas de faturação, subscrições internas, períodos, cálculo de valores com IVA, renovação)
+2. `easypay-payments` (tokenização no Checkout, cobrança por período, notificações)
+3. `manual-invoicing` (fila de faturas por emitir, registo do documento, prazos e alertas)
+4. `partner-billing`
+5. `subscription-lifecycle` (estados de cobrança, downgrade, fim de parceria)
 
-Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o free tier funcionar com limites reais; a cobrança (Stripe e Moloni) vem depois da fatia vertical, para validar o produto com utilizadores free mais cedo.
+Futuro, como adaptadores do mesmo motor: `stripe-payments` e `moloni-invoicing`.
+
+Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o free tier funcionar com limites reais; a cobrança vem depois da fatia vertical, para validar o produto com utilizadores free mais cedo.
 
 ## 11. Registo de decisões
 
@@ -364,7 +381,7 @@ Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o fr
 | D6 | Staff só acede a tenants por sessão de suporte auditada | Proposto |
 | D7 | 2FA não é funcionalidade paga; SSO/SAML no enterprise | Proposto |
 | D8 | Dois modos de faturação desde o início, com conta de faturação | Decidido |
-| D9 | Stripe para cobrar, Moloni para faturação legal | Decidido |
+| D9 | Motor de subscrições interno; Easypay para cobrar e faturação manual no MVP; Stripe e Moloni no futuro como adaptadores | Decidido |
 | D10 | Créditos de IA da plataforma com ledger, reserva e liquidação | Decidido |
 | D11 | Fim de parceria: cliente passa a pagar por si, 14 dias de graça | Decidido |
 | D12 | Primeira fatia: encomendas e métricas com PrestaShop 9 e Mirakl | Decidido |
@@ -384,8 +401,8 @@ Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o fr
 
 ## 12. Questões em aberto
 
-1. API do Moloni: documentação oficial, autenticação e tipos de documento (confirmar antes da spec `moloni-invoicing`).
-2. Motivos de isenção de IVA e regras fiscais (contabilista).
+1. Easypay: métodos ativos para pagamentos frequentes, limites e fluxo do mandato de débito direto (confirmar no contrato antes da spec `easypay-payments`).
+2. Contabilista: motivos de isenção de IVA, prazo de emissão em subscrições pagas adiantadas, tipo de documento (fatura recibo ou fatura e recibo) e destinatário da fatura no modo parceiro (modelo de revenda).
 3. Cobertura de encomendas na Admin API do PrestaShop 9 (spike).
 4. Mirakl Seller API ou Mirakl Connect (spike).
 5. Números do free tier, preços dos planos e valor do crédito.
