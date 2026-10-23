@@ -41,7 +41,7 @@ O repositório parte do template `nestjs-angular-monorepo` (da equipa), importad
 | Stack | Turborepo + pnpm, NestJS 11, Angular 22 (signals, standalone), Tailwind 4 + Material, Prisma 7, Zod v4 partilhado |
 | Autenticação | Better Auth 1.7: email e password, verificação de email, reset, Google, 2FA TOTP e códigos de backup, plugin admin (ban, impersonation) |
 | Jobs | BullMQ com DLQ e API de gestão, painel de filas só leitura, cron, emails Brevo |
-| Audit | Audit log append only no MongoDB, com `expireAt` por documento, para autenticação, administração e escritas de negócio |
+| Audit | Audit log append only para autenticação, administração e escritas de negócio (hoje no MongoDB; passa para Postgres, ver 7.3) |
 | Observabilidade | Pino com correlation IDs, Prometheus, Grafana, Loki, Sentry, health probes |
 | Qualidade | Jest 30, testcontainers, factories, cobertura mínima de 80%, CI e releases |
 | Processo | OpenSpec com SDD obrigatório (spec, testes, código) e configuração Claude (agentes, comando `tdd`) |
@@ -239,9 +239,20 @@ Motivo: postura de segurança diferente e superfície de ataque menor no backoff
 
 Empresas e parceiros; utilizadores; subscrições, planos, packs e overrides; catálogo de permissões e papéis de sistema; módulos por empresa; ligações por empresa (ecommerce, marketplaces, ERPs) com estado e atraso de sincronização; créditos de IA por empresa (ledger, consumo, custo real); métricas de negócio (MRR, churn, uso, **margem por tenant**); logs e audit; runs de agentes; sessões de suporte.
 
-### 7.3 Audit
+### 7.3 Audit e logs (MongoDB em standby)
 
-O audit existente no MongoDB passa a ter `organizationId`, tipo de ator (utilizador, API key, agente, staff, via parceiro), `run_id` e retenção dependente do plano (via `expireAt`). Os admins de cada organização veem o audit da sua organização; o staff vê tudo.
+O MongoDB fica em standby e não faz parte do MVP. Hoje o template exige o para arrancar (`MONGO_URI` obrigatório no schema de ambiente base e `MongoModule` importado pelo `SharedModule`), por isso pô lo em standby é uma change própria do Marco 0 (`remove-mongo-dependency`):
+
+1. **O audit passa para Postgres**, numa tabela `audit_event`, mantendo a interface do `AuditService` e os cenários da spec `audit-log` existente.
+   1. Append only garantido pela base de dados: o papel da aplicação só tem `INSERT` e `SELECT` nesta tabela.
+   2. Retenção por `expire_at`, dependente do plano. Um job diário apaga as linhas expiradas através de uma função `SECURITY DEFINER` que só remove o que expirou. Nenhuma operação edita ou apaga um evento individual.
+   3. Campos novos: `organization_id`, tipo de ator (utilizador, API key, agente, staff, via parceiro) e `run_id`. RLS por organização: os admins veem o audit da sua organização; o staff vê tudo através do backoffice e das sessões de suporte.
+   4. Particionamento mensal apenas quando o volume o justificar.
+2. **Logs de pedidos HTTP**: deixam de ir para base de dados e ficam nos logs estruturados do pino, recolhidos pelo Loki que já existe. O `LoggingInterceptor` deixa de escrever no MongoDB.
+3. **Logs de email**: passam também para os logs estruturados. Nenhuma funcionalidade os lê hoje.
+4. O código Mongo é removido, com uma tag git imediatamente antes da remoção para o recuperar se voltar a fazer falta (por exemplo, para volumes muito grandes de eventos).
+
+Infraestrutura resultante no MVP: Supabase (Postgres) e, no VPS, Redis e as aplicações.
 
 ### 7.4 Observabilidade
 
@@ -251,7 +262,7 @@ Sobre a stack existente: métricas de atraso de sincronização por ligação, p
 
 ### 8.1 MVP: aplicações no VPS, Postgres no Supabase
 
-1. Docker Compose de produção num VPS na UE: nginx com TLS, api, workers (sincronização, agentes, geral), cron, Redis com AOF, MongoDB, stack de observabilidade.
+1. Docker Compose de produção num VPS na UE: nginx com TLS, api, workers (sincronização, agentes, geral), cron, Redis com AOF, stack de observabilidade. Sem MongoDB (ver 7.3).
 2. Postgres no Supabase, numa região da UE próxima do VPS, usado **apenas como Postgres gerido**. Não se usam Supabase Auth, Storage, Realtime, Edge Functions nem as bibliotecas cliente: a autenticação é do Better Auth e a API é a nossa.
 3. Regras obrigatórias:
    1. **Data API desligada no projeto.** Com ela ligada, qualquer tabela do schema `public` sem RLS, incluindo as do Better Auth, fica acessível com a chave anon. As chaves anon e service role não são usadas em lado nenhum.
@@ -297,8 +308,9 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 ### Marco 0: fundação
 
 1. `fix-ci-baseline`: testes independentes de `.env`, contexto OpenSpec do domínio, LICENSE e proveniência.
-2. `consolidate-runtime`: juntar api, auth e notifications numa só app NestJS modular; manter worker e cron como processos separados; remover a chamada RPC de autenticação por pedido. (A confirmar.)
-3. `split-web-apps`: aplicação de cliente e backoffice, com pacote de UI partilhado.
+2. `remove-mongo-dependency`: audit para Postgres append only, logs HTTP e de email para o pino, remoção do `MONGO_URI` e do `MongoModule` (ver 7.3).
+3. `consolidate-runtime`: juntar api, auth e notifications numa só app NestJS modular; manter worker e cron como processos separados; remover a chamada RPC de autenticação por pedido. (A confirmar.)
+4. `split-web-apps`: aplicação de cliente e backoffice, com pacote de UI partilhado.
 
 ### Marco 1: identidade e tenancy
 
@@ -358,7 +370,7 @@ Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Strip
 | D15 | Multi modelo desde o início, modelo fixo por run | Decidido |
 | D16 | API Anthropic direta com minimização de dados pessoais e DPA | Decidido |
 | D17 | Sem SQL livre gerado pelo agente; tools de consulta tipadas | Proposto |
-| D18 | Manter MongoDB para audit e logs | Proposto |
+| D18 | MongoDB em standby: audit em Postgres append only, logs HTTP e de email no pino e Loki | Decidido |
 | D19 | Consolidar runtime num monólito modular mais workers | A confirmar |
 | D20 | Duas aplicações Angular (cliente e backoffice) | Proposto |
 | D21 | Aplicações em VPS com Docker na UE | Decidido |
@@ -374,7 +386,6 @@ Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Strip
 3. Cobertura de encomendas na Admin API do PrestaShop 9 (spike).
 4. Mirakl Seller API ou Mirakl Connect (spike).
 5. Números do free tier, preços dos planos e valor do crédito.
-6. MongoDB (audit) no VPS com backups próprios, ou MongoDB Atlas na UE, pela mesma lógica do Supabase.
-7. Região do Supabase, versão major do Postgres e plano a contratar.
-8. Períodos de retenção por plano (RGPD), incluindo transcrições de agentes.
-9. Confirmar D19 (consolidação do runtime) e D22 (línguas).
+6. Região do Supabase, versão major do Postgres e plano a contratar.
+7. Períodos de retenção por plano (RGPD), incluindo audit e transcrições de agentes.
+8. Confirmar D19 (consolidação do runtime) e D22 (línguas).
