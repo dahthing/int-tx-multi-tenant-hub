@@ -4,6 +4,7 @@ Estado: em revisão
 Data: 2026-10-23
 Origem: sessão de brainstorming (perguntas, alternativas e decisões registadas abaixo)
 Revisão: 2026-10-23, depois do relatório `reports/Módulos iniciais do hub ecommerce.md` (D12 e D13 revistas, D26 a D32 novas, questões 8 a 12)
+Revisão: 2026-10-23, depois do relatório `reports/Dores dos ecommerces multicanal.md` (D28 e D30 revistas, D33 a D36 novas, questões 13 a 15)
 
 Este documento consolida o desenho do core do produto. Não é uma spec: cada bloco aqui descrito será transformado numa ou mais changes OpenSpec, com cenários, testes escritos antes do código e só depois implementação (ver secção 9).
 
@@ -25,15 +26,19 @@ Core completo mais uma fatia vertical fina que o valida de ponta a ponta:
 1. Importar encomendas de **PrestaShop 9** e de **Mirakl (Worten)**.
 2. Ler o stock do PrestaShop e reservar esse stock quando a encomenda entra no hub. O hub não escreve stock nos canais neste marco.
 3. Aceitar linhas de encomenda Mirakl automaticamente por regras deterministas (stock confirmado, margem acima do limiar). As linhas que falham uma regra vão para uma **fila de exceções** com aprovação humana (stock em falta, margem negativa depois da comissão, preço anómalo, prazo de envio em risco), com contagem decrescente até ao fim do prazo. É a primeira ação de escrita do produto.
-4. Margem de contribuição por canal e por SKU (custo, comissão, portes, devoluções), no lugar de um painel de vendas. Os custos vêm do PrestaShop, de importação por CSV ou, quando faltam, de uma estimativa por categoria assinalada como tal.
-5. Indicadores Worten (taxa e tempo de aceitação, envio dentro do prazo) com alertas antes de cada limiar.
-6. **Agente de exceções**: trabalha a fila de exceções e escreve um resumo diário. Os números vêm só de métricas deterministas, com a fórmula visível.
+4. Margem de contribuição por canal e por SKU (custo, comissão, portes, devoluções), no lugar de um painel de vendas. Os custos vêm do PrestaShop, de importação por CSV ou, quando faltam, de uma estimativa por categoria assinalada como tal. As comissões são calculadas por um **motor de comissões** que conhece a base de cada canal (preço líquido, total com portes, ou total com portes e IVA), as taxas fixas por encomenda, as taxas regulatórias e a mensalidade repartida.
+5. **Motor de regras por canal**: prazos de aceitação e de envio, limiares e janelas dos indicadores ficam guardados como dados, com versão, data e fonte, editáveis pelo staff no backoffice, e nunca escritos no código. Na primeira fatia traz as regras da Worten (taxa e tempo de aceitação, envio dentro do prazo), com alertas antes de cada limiar. O conector Mirakl é parametrizado por operador desde o início.
+6. Contagem decrescente até ao limite de envio de cada encomenda, só de leitura. Enviar o código de seguimento para o canal fica para o segundo módulo.
+7. Catálogo fino com o dígito de controlo do EAN validado e os campos GPSR (fabricante e pessoa responsável na UE).
+8. **Agente de exceções**: trabalha a fila de exceções e escreve um resumo diário. Os números vêm só de métricas deterministas, com a fórmula visível.
 
 Porquê (relatório de 2026-10-23): a dor mais grave do segmento são os indicadores de aceitação da Mirakl, com suspensão da conta; o recorte anterior (importar, aprovar tudo à mão, painel de vendas, chat) já existe de graça no Base.com; a disposição para pagar está no stock; nenhum produto encontrado dá margem do lado do vendedor Mirakl. A aprovação humana de todas as linhas punha em risco o prazo de 24 horas fora do horário de trabalho.
 
+Porquê os pontos 4 a 7 (relatório multicanal de 2026-10-23): Worten, KuantoKusta, Amazon, eBay e os operadores Mirakl castigam as mesmas falhas com números diferentes, as regras mudam e aparecem em versões contraditórias, e cada canal cobra comissão sobre uma base diferente. Guardar regras e bases como dados desde a primeira fatia evita reescrever o modelo quando chegar o segundo canal.
+
 ### 1.2 Fora do primeiro marco
 
-Envio de stock e preço para os canais (proposto como segundo módulo, ver secção 10), PIM, WMS, automações, suporte, Ads, ERPs, faturação grossista com pool de créditos partilhado, SSO/SAML, módulo PrestaShop próprio com eventos em tempo real.
+Envio de stock e preço para os canais, com o código de seguimento (segundo módulo, ver secção 10), PIM, WMS, automações, suporte, Ads, ERPs, faturação grossista com pool de créditos partilhado, SSO/SAML, módulo PrestaShop próprio com eventos em tempo real.
 
 ## 2. Base técnica
 
@@ -193,9 +198,10 @@ O relatório de 2026-10-23 sugere um free tier de cerca de 100 encomendas, uma l
 5. Payload original em JSONB e campos específicos do canal em `attributes`, separados por conector.
 6. Dados pessoais cifrados com o `EncryptionService` do template; retenção por plano; remoção RGPD como operação de primeira classe.
 7. Métricas a partir de agregados diários por organização, canal e dia. O agente usa tools de consulta tipadas; não há geração de SQL livre.
-8. Catálogo fino, só o necessário para stock e margem: SKU mestre, EAN, título, custo (com a origem: PrestaShop, CSV ou estimativa por categoria) e IVA. Cada SKU liga a uma oferta por canal (identificador externo, preço, estado). Não é um PIM.
+8. Catálogo fino, só o necessário para stock, margem e conformidade: SKU mestre, EAN com dígito de controlo validado, título, custo (com a origem: PrestaShop, CSV ou estimativa por categoria), IVA, e os campos GPSR (fabricante e pessoa responsável na UE). Cada SKU liga a uma oferta por canal (identificador externo, preço, estado). Não é um PIM.
 9. Stock por localização com histórico de movimentos, e reservas criadas pela importação de encomendas e libertadas por envio, cancelamento ou recusa.
-10. Cada linha de encomenda guarda as taxas do canal (comissão, portes) para que a margem seja calculada por linha. A forma exata destas entidades é definida nas specs.
+10. Cada linha de encomenda guarda as taxas do canal (comissão, portes) e a base sobre a qual foram calculadas, para que a margem seja calculada por linha. A forma exata destas entidades é definida nas specs.
+11. Regras de canal como dados versionados: cada regra tem canal (e operador, na Mirakl), tipo (prazo de aceitação, prazo de envio, limiar de indicador, base de comissão), valor, janela, data de início, fonte e versão. As encomendas guardam a versão da regra com que foram avaliadas.
 
 ### 5.2 Framework de conectores
 
@@ -368,11 +374,12 @@ Cada change é uma fatia vertical pequena e entregável (API, UI quando aplicáv
 2. `canonical-orders` (com taxas por linha)
 3. `prestashop9-connector` (começa com spike; encomendas, stock e custo)
 4. `mirakl-connector` (começa com spike Seller API vs Connect; encomendas e comissões)
-5. `thin-catalog-and-costs` (SKU mestre, EAN, ofertas por canal, custos do PrestaShop, por CSV ou estimados por categoria)
+5. `thin-catalog-and-costs` (SKU mestre, EAN validado, campos GPSR, ofertas por canal, custos do PrestaShop, por CSV ou estimados por categoria)
 6. `stock-read-and-reservation`
-7. `margin-metrics` (margem de contribuição por canal e SKU)
-8. `marketplace-kpis` (indicadores Worten e alertas antes dos limiares)
-9. `mirakl-order-acceptance` (regras deterministas e fila de exceções com aprovação)
+7. `channel-rules` (regras por canal como dados versionados, editáveis no backoffice; regras da Worten na primeira versão)
+8. `margin-metrics` (motor de comissões por base de canal e margem de contribuição por canal e SKU)
+9. `marketplace-kpis` (indicadores calculados a partir das encomendas, alertas antes dos limiares, contagem até ao limite de envio)
+10. `mirakl-order-acceptance` (regras deterministas e fila de exceções com aprovação)
 
 ### Marco 4: agentes
 
@@ -393,14 +400,21 @@ Futuro, como adaptadores do mesmo motor: `stripe-payments` e `moloni-invoicing`.
 
 Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o free tier funcionar com limites reais; a cobrança vem depois da fatia vertical, para validar o produto com utilizadores free mais cedo.
 
-### Depois do Marco 5 (proposta do relatório, por decidir)
+### Depois do Marco 5
 
-1. `stock-push`: envio de stock e preço para as ofertas Mirakl e para o PrestaShop; segundo módulo e primeiro gatilho pago, lançado junto com a cobrança (D30).
-2. KuantoKusta e integrações com a faturação portuguesa (Moloni, InvoiceXpress), que nenhum concorrente encontrado cobre bem.
-3. Publicação de ofertas por EAN com regras de preço, a ponte para o catálogo.
-4. PIM ligeiro com IA para textos em português e espanhol e mapeamento de atributos Mirakl; também a entrada em Espanha.
-5. Feed Google Shopping e Ads como leitura de rentabilidade sobre a margem já recolhida (D31).
-6. WMS através de parceiros de envio (Sendcloud, CTT) até o volume o justificar (D31).
+Decidido (D30, D36):
+
+1. `stock-push`: envio de stock e preço para as ofertas Mirakl e para o PrestaShop, e envio do código de seguimento para o canal; segundo módulo e primeiro gatilho pago, lançado junto com a cobrança. Desenhado por eventos, com orçamento de chamadas por canal e reconciliação desde o primeiro dia.
+2. `invoicing-routing`: encaminhar as encomendas de todos os canais para software certificado (Moloni, InvoiceXpress), com o gatilho dos cinco dias da Worten. É faturação dos clientes; a faturação do próprio hub continua manual (D9).
+3. `amazon-connector`: Amazon.es sem dados pessoais (stock, preço, estado das encomendas, seguimento, stock FBA só de leitura). O registo como programador público começa no passo 2, porque a revisão leva semanas que não dependem do código.
+4. `kuantokusta-connector`, depois de confirmar os termos da API para integradores (questão 13).
+5. Ponte para etiquetas e seguimento com parceiros (Sendcloud, Packlink, CTT); o armazém continua com parceiros.
+6. Restantes operadores Mirakl (Leroy Merlin, El Corte Inglés, PcComponentes, MediaMarkt, Carrefour) por ofertas EAN, a ponte para Espanha.
+
+Proposto, por decidir:
+
+7. PIM ligeiro de conformidade, com IA para textos em português e espanhol e mapeamento de atributos por operador; entrada em Espanha com faturação compatível com o VeriFactu.
+8. Caixa única de mensagens com rascunhos de IA aprovados por uma pessoa; feed Google Shopping e Ads como leitura de rentabilidade (D31); WMS através de parceiros até o volume o justificar (D31); eBay só a pedido.
 
 ## 11. Registo de decisões
 
@@ -433,13 +447,19 @@ Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o fr
 | D25 | Testes de integração contra Postgres oficial na mesma versão major, para garantir portabilidade | Proposto |
 | D26 | Ler e reservar stock na primeira fatia; o envio de stock para os canais fica fora do primeiro marco | Decidido |
 | D27 | Margem de contribuição por canal e SKU no lugar do painel de vendas; custos do PrestaShop, por CSV ou estimados por categoria | Decidido |
-| D28 | Indicadores Worten calculados pelo hub, com alertas antes de cada limiar | Decidido |
+| D28 | Motor de regras por canal: prazos, limiares e janelas como dados versionados com fonte, editáveis no backoffice; indicadores calculados pelo hub com alertas antes de cada limiar; Worten na primeira versão | Decidido (revisto a 2026-10-23; antes: só indicadores Worten) |
 | D29 | Primeiro agente é o agente de exceções; números só de métricas deterministas, com fórmula visível | Decidido |
-| D30 | Segundo módulo e primeiro gatilho pago: envio de stock e preço, lançado com a cobrança | Proposto |
+| D30 | Segundo módulo e primeiro gatilho pago: envio de stock, preço e código de seguimento, lançado com a cobrança | Decidido (revisto a 2026-10-23) |
 | D31 | Ads como leitura de rentabilidade, não gestão de lances; WMS através de parceiros de envio | Proposto |
 | D32 | Perguntas livres ao agente pagas em créditos; resumos em lote com o modelo pequeno | Proposto |
+| D33 | Motor de comissões com a base de cada canal, taxas fixas, taxas regulatórias e mensalidade repartida, desde a primeira fatia | Decidido |
+| D34 | Catálogo fino com EAN validado e campos GPSR desde a primeira fatia; PIM completo depois | Decidido |
+| D35 | Contagem até ao limite de envio na primeira fatia, só de leitura; envio do seguimento no segundo módulo | Decidido |
+| D36 | Ordem depois do envio de stock: faturação certificada PT, Amazon.es sem dados pessoais, KuantoKusta, etiquetas, operadores Mirakl por EAN | Decidido (a Amazon passa à frente do KuantoKusta, contra a ordem do relatório) |
 
 ## 12. Questões em aberto
+
+As questões 8, 11, 13, 14 e 15 têm uma lista de verificação, com o modo de confirmar cada uma, em `docs/research/pontos-a-confirmar.md`. A questão 12 tem o guião em `docs/research/guiao-entrevistas-vendedores.md`.
 
 1. Easypay: métodos ativos para pagamentos frequentes, limites e fluxo do mandato de débito direto (confirmar no contrato antes da spec `easypay-payments`).
 2. Contabilista: motivos de isenção de IVA, prazo de emissão em subscrições pagas adiantadas, tipo de documento (fatura recibo ou fatura e recibo) e destinatário da fatura no modo parceiro (modelo de revenda).
@@ -451,5 +471,8 @@ Ordem decidida: planos, entitlements e quotas existem desde o Marco 2, para o fr
 8. Termos Worten em vigor: versão do anexo XI, prazo de aceitação (24 horas nos termos de vendedor, 72 horas nos termos da conta online), limiares e número de suspensões até ao encerramento. Bloqueia os valores por omissão das regras (D13) e dos alertas (D28).
 9. O que acontece a uma linha da fila de exceções quando o prazo de aceitação se aproxima sem decisão humana (aceitar, recusar ou deixar expirar). BLOCKED na spec `mirakl-order-acceptance` até ser decidido.
 10. Valores por omissão das regras de aceitação: limiar de margem, stock mínimo, margem de segurança e o que conta como preço anómalo.
-11. Se a Mirakl Seller API expõe os indicadores oficiais do vendedor e a comissão por linha (spike do `mirakl-connector`).
-12. Validação com 10 a 20 vendedores Worten: encomendas e SKUs por mês, custo preenchido no PrestaShop, revenda de marcas já catalogadas, gestão manual no back office.
+11. Se a Mirakl Seller API expõe os indicadores oficiais do vendedor, o índice de completude, as mensagens e a comissão por linha, e se a API é a mesma em todos os operadores, mudando só o endereço e a chave (spike do `mirakl-connector`).
+12. Validação com 10 a 20 vendedores multicanal (guião em `docs/research/guiao-entrevistas-vendedores.md`): canais, encomendas e SKUs por mês, cancelamentos e recusas, custo preenchido no PrestaShop, faturação usada, envio próprio ou FBA, revenda de marcas já catalogadas.
+13. KuantoKusta: termos da API para integradores (uma SaaS pode guardar as chaves de muitos vendedores?), webhooks, atualização de ofertas em lote, e qual dos dois prazos de aceitação está em vigor. Bloqueia o `kuantokusta-connector`.
+14. Amazon SP-API: se expõe a taxa de entrega no prazo e o índice de saúde da conta, e quanto demora a revisão de programador público. Afeta o `amazon-connector` e os alertas.
+15. Termos Worten e limites de pedidos que a Mirakl aplica hoje a parceiros externos na Worten (complementa a questão 8).
