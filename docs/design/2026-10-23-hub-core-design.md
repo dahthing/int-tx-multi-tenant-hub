@@ -247,13 +247,34 @@ O audit existente no MongoDB passa a ter `organizationId`, tipo de ator (utiliza
 
 Sobre a stack existente: métricas de atraso de sincronização por ligação, profundidade de filas, custo por run de agente, consumo de créditos. Alertas: falhas Moloni, crescimento da DLQ, falhas de autenticação de ligações.
 
-## 8. Alojamento (VPS com Docker)
+## 8. Alojamento
 
-1. Docker Compose de produção num VPS na UE: nginx com TLS, api, workers (sincronização, agentes, geral), cron, Postgres, Redis com AOF, MongoDB, stack de observabilidade.
-2. Postgres com papel dono para migrações e papel restrito para a aplicação (guard de arranque ativo).
-3. Backups com recuperação para um ponto no tempo enviados para object storage, e um ensaio de reposição mensal.
-4. Escala: mais containers de worker; depois, workers num segundo VPS.
-5. Recomendação registada: a base de dados é o componente mais arriscado de operar sozinho. Ponderar Postgres gerido na UE, mantendo o resto no VPS.
+### 8.1 MVP: aplicações no VPS, Postgres no Supabase
+
+1. Docker Compose de produção num VPS na UE: nginx com TLS, api, workers (sincronização, agentes, geral), cron, Redis com AOF, MongoDB, stack de observabilidade.
+2. Postgres no Supabase, numa região da UE próxima do VPS, usado **apenas como Postgres gerido**. Não se usam Supabase Auth, Storage, Realtime, Edge Functions nem as bibliotecas cliente: a autenticação é do Better Auth e a API é a nossa.
+3. Regras obrigatórias:
+   1. **Data API desligada no projeto.** Com ela ligada, qualquer tabela do schema `public` sem RLS, incluindo as do Better Auth, fica acessível com a chave anon. As chaves anon e service role não são usadas em lado nenhum.
+   2. **A aplicação liga com um papel próprio, restrito, sem `BYPASSRLS`.** Isto contraria de propósito a recomendação geral do Supabase para backends (um papel com bypassrls): o isolamento entre tenants depende do RLS. O guard `assertRlsEnforceable` recusa arrancar com os papéis `postgres` ou `service_role`. Migrações e seeds usam o papel dono.
+   3. **Ligações.** O backend é de longa duração, por isso usa a ligação direta ou o pooler em modo sessão. O modo transação não suporta os prepared statements do Prisma. Migrações pela ligação direta ou em modo sessão. Pools pequenos por processo, para caber no limite de ligações do plano. Se o VPS só tiver IPv4, a ligação direta exige o add on de IPv4; o pooler em modo sessão funciona sem ele.
+   4. O tenant é definido com `set_config(..., true)`, local à transação, o que funciona em qualquer modo de ligação.
+   5. **Medir cedo** a latência entre o VPS e o Supabase e o custo da transação extra por query do RLS, que a prova de conceito não mediu. Se pesar, abre se uma transação por pedido em vez de uma por query.
+   6. Plano pago desde o primeiro cliente real (backups e sem pausa por inatividade; condições exatas a confirmar na contratação).
+4. Portabilidade, para a saída futura:
+   1. Só Postgres standard: schema `public`, extensões comuns (pgcrypto, pgvector, pg_stat_statements), nada dos schemas `auth`, `storage` ou `realtime`, nem pg_graphql.
+   2. Os testes de integração correm contra a imagem oficial do Postgres, na mesma versão major do Supabase. O que só funcionar no Supabase falha no CI.
+   3. A versão major fica fixada num ADR e é igual no Supabase, nos testcontainers e no futuro Postgres interno.
+
+### 8.2 Saída para Postgres interno
+
+1. Gatilhos: custo, limites de ligações ou de compute, exigência contratual de um cliente, ou configuração e extensões que o Supabase não permita.
+2. Método: replicação lógica do Supabase para o servidor novo e corte numa janela curta. Enquanto a base for pequena, um `pg_dump` e `pg_restore` numa janela de manutenção também serve.
+3. Passos: recriar os papéis (dono e restrito), restaurar, validar com a suite de isolamento e com o guard de arranque, trocar o `DATABASE_URL`, monitorizar.
+4. A partir daí: backups com recuperação para um ponto no tempo enviados para object storage, e um ensaio de reposição mensal.
+
+### 8.3 Escala
+
+Mais containers de worker; depois, workers num segundo VPS.
 
 ## 9. Processo: Spec Driven Development com testes primeiro
 
@@ -340,8 +361,11 @@ Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Strip
 | D18 | Manter MongoDB para audit e logs | Proposto |
 | D19 | Consolidar runtime num monólito modular mais workers | A confirmar |
 | D20 | Duas aplicações Angular (cliente e backoffice) | Proposto |
-| D21 | Alojamento em VPS com Docker na UE | Decidido |
+| D21 | Aplicações em VPS com Docker na UE | Decidido |
 | D22 | Documentos de produto em português; specs OpenSpec e código em inglês | A confirmar |
+| D23 | Postgres no Supabase (UE) no MVP, só como Postgres gerido; Postgres interno depois | Decidido |
+| D24 | Data API do Supabase desligada; app com papel restrito sem `BYPASSRLS` | Proposto |
+| D25 | Testes de integração contra Postgres oficial na mesma versão major, para garantir portabilidade | Proposto |
 
 ## 12. Questões em aberto
 
@@ -350,6 +374,7 @@ Ordem alternativa a ponderar: fazer o Marco 3 e o `agent-runtime` antes do Strip
 3. Cobertura de encomendas na Admin API do PrestaShop 9 (spike).
 4. Mirakl Seller API ou Mirakl Connect (spike).
 5. Números do free tier, preços dos planos e valor do crédito.
-6. Postgres gerido ou no VPS.
-7. Períodos de retenção por plano (RGPD), incluindo transcrições de agentes.
-8. Confirmar D19 (consolidação do runtime) e D22 (línguas).
+6. MongoDB (audit) no VPS com backups próprios, ou MongoDB Atlas na UE, pela mesma lógica do Supabase.
+7. Região do Supabase, versão major do Postgres e plano a contratar.
+8. Períodos de retenção por plano (RGPD), incluindo transcrições de agentes.
+9. Confirmar D19 (consolidação do runtime) e D22 (línguas).
