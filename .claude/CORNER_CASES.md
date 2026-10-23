@@ -57,6 +57,14 @@ Two more things surfaced while smoke-testing against a fake ingest endpoint:
 
 If a future better-auth upgrade reports a similar mismatch for a different plugin, check whether the plugin's own schema definition actually changed between versions (a real new requirement) before assuming it did — as with `Account.issuer`, better-auth sometimes reverts a schema change between versions, and the two failure modes look identical from the error message alone. Diff the installed package's schema source between versions before writing a migration.
 
+### better-auth routes run outside Nest: no CLS, no interceptors, and an after hook that throws replaces the response
+
+**Symptom:** audit events recorded from a better-auth hook had no `correlationId`, `/sign-out` events had no actor, and the Mongo request `Log` has no `/api/auth/*` entries at all.
+
+**Cause:** `@thallesp/nestjs-better-auth` mounts the handler with `httpAdapter.use(...)`, i.e. raw Express, ahead of Nest's middleware chain. So (1) the global CLS middleware never runs for those routes, and `ClsService.get()` has no store; (2) interceptors and guards never see them; (3) better-auth clears the session during `/sign-out`, so by the time an after hook runs `ctx.context.session` is gone; (4) better-auth runs after hooks on failures too (`ctx.context.returned` is the `APIError`) and an `APIError` thrown from an after hook **replaces the real response**.
+
+**Fix:** `apps/auth/src/audit/`: pass the module's `middleware` option (`withCorrelationId(cls)`) to wrap the handler in a CLS context; a `@BeforeHook('/sign-out')` looks the session up first and stashes it on `ctx.context.auditSession`; and `AuthAuditHook.onAfter` wraps everything in try/catch and never throws. Detect a failed request by shape (`Error` with a numeric `statusCode`), not `instanceof`, so unit tests need not load the ESM better-auth package.
+
 ### `*` means opposite things to `enableCors` and to `trustedOrigins`
 
 **Symptom:** a `CORS_ORIGIN`/origin-allowlist value of `*` looks like it should behave the same way in every place it's consumed, but it doesn't — in one place it silently blocks everything, in the other it silently trusts everything.
@@ -92,11 +100,41 @@ hoisting at the root hides exactly the failure a pruned deploy reproduces.
 
 **Fix:** run `pnpm dedupe` after bumping a package that multiple workspaces depend on (directly or via a peer range) — it collapses the two resolutions back to one (`grep -n "^  bullmq@" pnpm-lock.yaml` should show exactly one entry). A plain `pnpm install` is not guaranteed to do this on its own. If a build error names a "duplicate" class assignable to its own definition, suspect two resolved copies of the same package before suspecting an actual breaking API change.
 
+### Bull Board can't replay a DLQ job: DLQ jobs sit in `waiting` in a queue nobody consumes
+
+**Symptom:** the dashboard shows `email-queue-dlq` jobs but offers no retry for them; and a retry on the failed original in `email-queue` sends the email a second time.
+
+**Cause:** `EmailConsumer` copies a permanently failed job into `email-queue-dlq` with `dlqQueue.add(job.name, job.data)`, so it is a fresh `waiting` job in a queue with no `@Processor`, while the failed original also stays in `email-queue` (`removeOnFail: 500`). Bull Board's retry only re-runs a `failed` job inside its own queue.
+
+**Fix:** replay is `BaseDlqService.replay()` (`DLQ_REPLAY` message pattern), which re-adds the job to the original queue and removes it from the DLQ. The dashboard is therefore mounted with `readOnlyMode: true` on both queues (`apps/worker/src/bull-board/`).
+
+### Bull Board is a mounted Express app: under the global prefix by default, outside guards, interceptors and CLS
+
+**Symptom:** with `globalPrefix: 'api'` the dashboard answers at `/api/admin/queues`, not `/admin/queues`; `@UseGuards`/`@Audit` have no effect on it; and the 401/403/503 bodies it returns have no `correlationId` and a `path` like `/api/queues` instead of the full URL.
+
+**Cause:** `@bull-board/nestjs` mounts the board's router through `MiddlewareConsumer.forRoutes(route)`, which Nest prefixes like any route. It is not a controller, so guards and interceptors never run. `ClsModule`'s middleware is mounted on `'*'` _under_ the prefix, so a route excluded from the prefix gets no CLS store; and Express strips the mount point from `request.url`, which is what `AllExceptionFilter` reports as `path`.
+
+**Fix:** serve it at `/admin/queues` with `globalPrefixExclude: ['admin/queues']` (`workerBootstrapConfig`), and gate it with Bull Board's own `middleware` option: Nest runs it through its exception filters, so it can simply `throw` `UnauthorizedException` / `ForbiddenException` / `ServiceUnavailableException`. Pass a function, not a class: a class is resolved in `BullBoardRootModule`'s scope, which cannot see `SERVICES.AUTH`; build it in `forRootAsync`'s `useFactory`.
+
+### Bull Board's `forFeature` instantiates the adapter class itself — formatters need a subclass, and `readOnlyMode` answers 405
+
+**Symptom:** `adapter.setFormatter('data', …)` has nowhere to be called, because `forFeature({ name, adapter, options })` takes the adapter _class_ and `options` has no formatter slot.
+
+**Fix:** a `BullMQAdapter` subclass that calls `this.setFormatter(...)` in its constructor (`RedactingBullMQAdapter`). Note `readOnlyMode` is enforced server-side — every queue-scoped write route returns **405** (`ERRORS.QUEUE_READ_ONLY`) through `queueProvider`; the global pause-all/resume-all answer 200 but skip read-only queues. `apps/worker/test/bull-board.integration.ts` lists every write route of the installed version and fails if an upgrade adds one that isn't covered.
+
 ---
 
 ## Database (Prisma / PrismaPg)
 
 <!-- Add Prisma / DB corner cases here -->
+
+### Partial unique indexes must be declared in the schema (`partialIndexes` preview), never hand-written into a migration
+
+**Context:** `Customer.taxIdHash` has to be unique only among non-deleted rows (`WHERE "deletedAt" IS NULL`).
+
+**Gotcha:** if you hand-write a `CREATE UNIQUE INDEX ... WHERE ...` into a migration's SQL, the Prisma schema doesn't know the index exists. The next `prisma migrate dev` detects drift and generates a `DROP INDEX` for it.
+
+**Fix:** since Prisma 7.4, enable `previewFeatures = ["partialIndexes"]` on the generator and declare `@@unique([taxIdHash], where: { deletedAt: null })`. The generated migration contains the `WHERE ("deletedAt" IS NULL)` clause, and `migrate dev --create-only` then produces an empty migration, which confirms there is no drift. This is a preview feature: if it is ever removed, fall back to raw SQL **and** expect to re-apply it after every drift-triggered regeneration. Columns are camelCase here (no field `@map`), so a `raw(...)` predicate must quote `"deletedAt"`.
 
 ### `pnpm db:generate` alone is not enough after editing `auth.prisma` — `packages/database` must also be rebuilt
 
@@ -123,6 +161,14 @@ Under that distribution model, an incremental migration added here would reach *
 ## Angular
 
 <!-- Add Angular edge cases here -->
+
+### `<mat-dialog-content class="flex …">` silently renders as `display: block`
+
+**Symptom:** dialog form fields sit side by side in narrow inline rows (and overflow the dialog) instead of stacking, even though `<mat-dialog-content>` has `flex flex-col gap-2`.
+
+**Cause:** Material's `.mat-mdc-dialog-content { display: block }` is injected **unlayered**, while Tailwind v4 utilities live in `@layer utilities`. Unlayered CSS beats any layered rule regardless of specificity, so `.flex` loses, and the `inline-flex` `mat-form-field`s flow inline. `flex-col`/`gap-*` still compute, but they do nothing on a block container. This affected every dialog in `apps/web`.
+
+**Fix:** a global unlayered `.mat-mdc-dialog-content.flex { display: flex; }` in `apps/web/src/styles.scss` (specificity 0,2,0 beats Material's 0,1,0 regardless of injection order). When a Tailwind utility "does nothing" on a Material element, check the computed style for an unlayered Material rule before adding more classes.
 
 ---
 
@@ -171,6 +217,22 @@ See `openspec/changes/update-monorepo-dependencies/design.md` (D5) for the full 
 **Cause:** `@faker-js/faker` ships `"type": "module"` with no CommonJS build at all (checked directly against its `package.json`). `packages/testing-utils` compiles to CommonJS, so its compiled `user.factory.js` calls `require()` on a package that has no `require`-able entry point — Node throws `ERR_REQUIRE_ESM` regardless of any `transformIgnorePatterns` tweak, because the `.js` file has already been compiled to a static `require()` call; no Jest transform step can retroactively turn that into an `import()`. `apps/auth/test/jest-integration.json` ran plain CommonJS Jest, unlike `jest-e2e.json`, which was already ESM-mode and unaffected. Not caused by any dependency version bump — `@faker-js/faker` was already pinned at `^10.6.0` (pure ESM) before this repo's most recent dependency work; `test:integration` isn't wired into any CI workflow, so nothing had caught it.
 
 **Fix:** converted `apps/auth/test/jest-integration.json` to the same real-ESM Jest setup already used by `jest-e2e.json` (`extensionsToTreatAsEsm: [".ts"]`, `ts-jest` with `useESM: true` and an inline ESNext/bundler tsconfig), and prefixed the `test:integration` script with `NODE_OPTIONS='--experimental-vm-modules'` — under Node ≥24.9 (this repo runs 24.19), Jest's native ESM execution mode can `require(esm)` a CJS module that itself requires a pure-ESM package; plain CJS Jest mode cannot. Doing this surfaced a second, previously-hidden issue in the same file: under real ESM, Jest's globals (`jest.fn()`, etc.) aren't auto-injected — `test/users.integration.ts` needed an explicit `import { jest } from '@jest/globals';`. If another package ever needs a pure-ESM-only dependency under a Jest suite that still runs in CJS mode, converting that suite's config to this same ESM pattern is the fix, not a `transformIgnorePatterns` change.
+
+### A suite that imports app source can't use the ESM-mode Jest config — `require(esm)` cycle on `@repo/shared-types`
+
+**Symptom:** `apps/api`'s `test:integration`, copied from `apps/auth`'s ESM config, fails before any test runs: `Cannot require() ES Module .../packages/shared-types/dist/index.js in a cycle`, thrown from `packages/database/dist/src/database.service.js`.
+
+**Cause:** in ESM mode `ts-jest` compiles the app's own `src/` to ESM. A controller that imports both `@repo/shared` (CommonJS, which `require`s `@repo/database` → `@repo/shared-types`) and `@repo/shared-types` (ESM) puts `shared-types` into the ESM graph that is being linked. The CJS `require()` of it then counts as a cycle, and Jest refuses it. `apps/auth`'s integration suite never imports app source, so it never hits this.
+
+**Fix:** keep the suite's **test files in CommonJS** (plain `ts-jest`, no `useESM`/`extensionsToTreatAsEsm`, `tsconfig.test.json`), but **keep `NODE_OPTIONS='--experimental-vm-modules'`** on the script. That flag is what lets Jest `require(esm)` the pure-ESM `@faker-js/faker` from `@repo/testing-utils` (Node ≥24.9). See `apps/api/test/jest-integration.json`. With CJS test files the `jest` global is injected, so do not `import { jest } from '@jest/globals'`.
+
+### `Nest can't resolve ClsService` in an ESM-mode Jest suite — import it from `@repo/shared`
+
+**Symptom:** `apps/auth`'s e2e (ESM Jest) fails at boot with `Nest can't resolve dependencies of the Symbol(AUTH_MODULE_OPTIONS) (…, ?)… ClsService at index [2]`, although the same code runs fine under `pnpm dev`.
+
+**Cause:** `inject: [ClsService]` imported from `nestjs-cls` in the app. Under ESM mode Jest loads the app's own copy of the package as ESM while `@repo/shared`'s CommonJS `dist` loaded another, so the `ClsService` class (the DI token) differs from the one `SharedModule`'s `ClsModule` provides.
+
+**Fix:** `@repo/shared` re-exports `ClsService`; apps import it from there (and do not declare `nestjs-cls` themselves). Same family as the `require(esm)` entry above: anything shared that is also a DI token must come from a single package.
 
 ### `jest.setup.ts` `override: true` silently re-points `globalSetup`'s container URLs at localhost
 

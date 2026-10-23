@@ -140,8 +140,9 @@ Default job options (set in `QueueModule`):
 - Use NestJS `Logger` (backed by pino). Never use `console.log` except in `main.ts` startup messages.
 - `LoggingInterceptor` persists HTTP request/response to MongoDB. Skipped (as is pino auto-logging and Sentry tracing) for any path with a `/health`, `/metrics` or `/favicon.ico` segment, e.g. `/api/health/live`, via `isSilentPath` in `constants/observability.ts`.
 - `AllExceptionFilter` returns: `{ statusCode, timestamp, path, message, correlationId }`.
-- Throw standard NestJS HTTP exceptions (`NotFoundException`, `BadRequestException`, etc.). Zod validation errors → 422 via `ZodValidationException`.
+- Throw standard NestJS HTTP exceptions (`NotFoundException`, `BadRequestException`, etc.). Zod validation errors → 400 via `ZodValidationException` (response adds an `errors` array of Zod issues).
 - 5xx errors are automatically captured by Sentry via `AllExceptionFilter`.
+- **The request `Log` is not an audit trail.** Use the audit log for "who did what": in `apps/api` mark a write handler with `@Audit('<action>', { targetType, fields })` (declare `fields` on update handlers; actions live in `AUDIT_ACTIONS` in `@repo/shared-types`); in `apps/auth` add the better-auth path to `AUTH_AUDIT_PATHS`. Events store field names, never values, except the fixed `SAFE_CHANGE_FIELDS`.
 
 > There is no tRPC layer. `apps/api` exposes plain REST controllers only —
 > tRPC (and `packages/trpc`) was removed in the Next.js → Angular migration

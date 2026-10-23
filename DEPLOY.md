@@ -19,9 +19,9 @@ Topologia de dois subdomínios (SSO entre `web` e `auth` via cookie partilhado n
             └── /api/auth/ → auth
 
 [Apps internas — não expostas pelo reverse proxy]
-    ├── cron          (NestJS, porta 3200)
-    ├── notifications (NestJS, porta 3300)
-    └── worker        (NestJS, porta 3400)
+    ├── cron          (NestJS, porta 3400)
+    ├── notifications (NestJS, porta 3200)
+    └── worker        (NestJS, porta 3300)
 
 [Infraestrutura interna]
     ├── PostgreSQL  (porta 5432)
@@ -149,12 +149,12 @@ Criar um ficheiro `.env.production` para cada app. Em produção, o Docker deve 
 
 ---
 
-### `apps/notifications/.env` (porta 3300)
+### `apps/notifications/.env` (porta 3200)
 
 | Variável         | Valor de Produção                                                     | Obrigatório | Notas |
 | ---------------- | --------------------------------------------------------------------- | ----------- | ----- |
 | `NODE_ENV`       | `production`                                                          | ✅          |       |
-| `PORT`           | `3300`                                                                | ✅          |       |
+| `PORT`           | `3200`                                                                | ✅          |       |
 | `DATABASE_URL`   | `postgres://app_db:<PG_PASS>@postgres:5432/app_db?schema=public`    | ✅          |       |
 | `REDIS_HOST`     | `redis`                                                               | ✅          |       |
 | `REDIS_PORT`     | `6379`                                                                | ✅          |       |
@@ -165,12 +165,12 @@ Criar um ficheiro `.env.production` para cada app. Em produção, o Docker deve 
 
 ---
 
-### `apps/worker/.env` (porta 3400)
+### `apps/worker/.env` (porta 3300)
 
 | Variável         | Valor de Produção                                                     | Obrigatório | Notas                                                     |
 | ---------------- | --------------------------------------------------------------------- | ----------- | --------------------------------------------------------- |
 | `NODE_ENV`       | `production`                                                          | ✅          |                                                           |
-| `PORT`           | `3400`                                                                | ✅          |                                                           |
+| `PORT`           | `3300`                                                                | ✅          |                                                           |
 | `DATABASE_URL`   | `postgres://app_db:<PG_PASS>@postgres:5432/app_db?schema=public`    | ✅          |                                                           |
 | `REDIS_HOST`     | `redis`                                                               | ✅          |                                                           |
 | `REDIS_PORT`     | `6379`                                                                | ✅          |                                                           |
@@ -252,7 +252,7 @@ auth:
     start_period: 30s
 ```
 
-Repetir o padrão para `api` (porta 3100), `cron` (porta 3200), `notifications` (porta 3300), `worker` (porta 3400) e `web` (porta 8080 → exposta conforme o reverse proxy).
+Repetir o padrão para `api` (porta 3100), `cron` (porta 3400), `notifications` (porta 3200), `worker` (porta 3300) e `web` (porta 8080 → exposta conforme o reverse proxy).
 
 > Para os volumes do PostgreSQL e MongoDB em produção, substituir os caminhos absolutos locais (`/Volumes/SSD-DEV/...`) por caminhos no servidor, por exemplo `/data/<app-name>/postgres` e `/data/<app-name>/mongo`.
 
@@ -316,9 +316,9 @@ curl https://<dominio-frontend>/api/health/ready
 
 # Health checks internos (não expostos publicamente, incluindo auth)
 curl http://localhost:3000/api/health/ready   # auth
-curl http://localhost:3200/api/health/ready   # cron
-curl http://localhost:3300/api/health/ready   # notifications
-curl http://localhost:3400/api/health/ready   # worker
+curl http://localhost:3400/api/health/ready   # cron
+curl http://localhost:3200/api/health/ready   # notifications
+curl http://localhost:3300/api/health/ready   # worker
 
 # Logs
 docker compose logs -f auth
@@ -331,7 +331,7 @@ docker compose logs -f api
 
 `web` e `auth` vivem em subdomínios irmãos que partilham o domínio pai, para que o cookie de sessão possa ser partilhado entre ambos (SSO). Usar os server blocks prontos em [docs/deploy/nginx/](docs/deploy/nginx/):
 
-- [`frontend.conf`](docs/deploy/nginx/frontend.conf) — serve os estáticos do `web` (proxied até ao container na porta `8080`, ou diretamente do filesystem, conforme a instalação) e faz proxy same-origin de `/api/` para `api` (porta 3100)
+- [`frontend.conf`](docs/deploy/nginx/frontend.conf) — serve os estáticos do `web` (proxied até ao container na porta `8080`, ou diretamente do filesystem, conforme a instalação) e faz proxy same-origin de `/api/` para `api` (porta 3100) e de `/admin/queues/` para o dashboard de filas (só leitura, só admins) do `worker` (porta 3300)
 - [`auth.conf`](docs/deploy/nginx/auth.conf) — faz proxy de `/api/auth/` para `auth` (porta 3000)
 
 ```bash
@@ -346,8 +346,13 @@ sudo certbot --nginx -d <dominio-frontend> -d <dominio-auth>
 
 Configurar em `apps/auth`: `BETTER_AUTH_URL=https://<dominio-auth>/api/auth`, `CORS_ORIGIN=https://<dominio-frontend>`, `COOKIE_DOMAIN=.<dominio-pai>` (ver `apps/auth/.env.example`). O prefixo `Secure` do cookie deriva de `BETTER_AUTH_URL` começar por `https://` — nunca dos headers do proxy.
 
-> Os serviços `cron` (porta 3200), `notifications` (porta 3300) e `worker` (porta 3400)
+> Os serviços `cron` (porta 3400), `notifications` (porta 3200) e `worker` (porta 3300)
 > **não devem ser expostos publicamente** — comunicam apenas via Redis/BullMQ internamente.
+> A única exceção é o dashboard de filas do `worker`, que chega ao browser **apenas** pelo
+> `location ^~ /admin/queues/` do `frontend.conf` (o `^~` é obrigatório: sem ele a regra dos
+> ficheiros estáticos devolve 404 aos `.js`/`.css` do dashboard). O `worker` escuta em todas as
+> interfaces, por isso a firewall tem de bloquear a porta `3300`. O `nginx.conf.template` interno
+> do container `web` não faz proxy do dashboard — quem o faz é o nginx do host.
 
 ---
 

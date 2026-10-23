@@ -165,7 +165,7 @@ ENCRYPTION_KEY=<mesmo valor que apps/auth>
 
 ```dotenv
 NODE_ENV=production
-PORT=3300
+PORT=3200
 
 DATABASE_URL=postgres://app_db:<PG_PASS>@localhost:5432/app_db?schema=public
 
@@ -186,7 +186,7 @@ ENCRYPTION_KEY=<mesmo valor que apps/auth>
 
 ```dotenv
 NODE_ENV=production
-PORT=3400
+PORT=3300
 
 DATABASE_URL=postgres://app_db:<PG_PASS>@localhost:5432/app_db?schema=public
 
@@ -340,7 +340,7 @@ pm2 flush
 sudo apt install nginx
 ```
 
-`web` e `auth` vivem em subdomínios irmãos que partilham o domínio pai, para que o cookie de sessão possa ser partilhado entre ambos (SSO). Usar os server blocks prontos em [docs/deploy/nginx/](docs/deploy/nginx/) — `frontend.conf` serve o build estático de `apps/web/dist/web/browser/` diretamente do filesystem e faz proxy same-origin de `/api/` para `api`; `auth.conf` faz proxy de `/api/auth/` para `auth`:
+`web` e `auth` vivem em subdomínios irmãos que partilham o domínio pai, para que o cookie de sessão possa ser partilhado entre ambos (SSO). Usar os server blocks prontos em [docs/deploy/nginx/](docs/deploy/nginx/) — `frontend.conf` serve o build estático de `apps/web/dist/web/browser/` diretamente do filesystem e faz proxy same-origin de `/api/` para `api` e de `/admin/queues/` para o dashboard de filas (só leitura, só admins) do `worker`; `auth.conf` faz proxy de `/api/auth/` para `auth`:
 
 ```bash
 sudo cp docs/deploy/nginx/frontend.conf /etc/nginx/sites-available/frontend
@@ -353,7 +353,9 @@ sudo systemctl reload nginx
 sudo certbot --nginx -d <dominio-frontend> -d <dominio-auth>
 ```
 
-> O `notifications` (3300) e o `worker` (3400) **não devem ser expostos** — comunicam apenas internamente via Redis. Todas as apps NestJS partilham o mesmo prefixo `/api`; a distinção entre elas é feita pela porta.
+> O `notifications` (3200) e o `worker` (3300) **não devem ser expostos** — comunicam apenas internamente via Redis. Todas as apps NestJS partilham o mesmo prefixo `/api`; a distinção entre elas é feita pela porta.
+>
+> Exceção: o dashboard de filas do `worker` (`/admin/queues/`, fora do prefixo `/api`) é servido pelo `frontend.conf` através de `location ^~ /admin/queues/` — o `^~` é obrigatório, senão a regra dos ficheiros estáticos devolve 404 aos `.js`/`.css` do dashboard. A porta 3300 continua a não ser exposta (o `worker` escuta em todas as interfaces: bloqueá-la na firewall).
 
 ---
 
@@ -404,3 +406,4 @@ pm2 reload all
 - [ ] `pm2 startup` + `pm2 save` configurados
 - [ ] Nginx configurado e a servir HTTPS em `<dominio-frontend>` e `<dominio-auth>`
 - [ ] Portas 3000, 3100, 3200, 3300, 3400 **não expostas** diretamente ao exterior (apenas 80/443 via Nginx)
+- [ ] `https://<dominio-frontend>/admin/queues/` responde `401` sem sessão, `403` a um utilizador não-admin e `200` a um admin
