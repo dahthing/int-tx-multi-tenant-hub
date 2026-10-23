@@ -18,10 +18,10 @@ Commit gate used at the end of each group: the `/commit` skill referenced by `op
 
 ## 3. Repository identity
 
-- [ ] 3.1 docs: repository root: add `LICENSE` with a proprietary, all rights reserved notice, copyright 2026 TargX (design D3). Verify: file exists and names the holder and year.
-- [ ] 3.2 docs: repository root: add `NOTICE` recording that the codebase was initialised from the team's `nestjs-angular-monorepo` template at `v1.8.1` plus `develop` at `45d1c79`, tracked as the `upstream` git remote. Verify: `git rev-parse --short upstream/develop` and the tag named in the file match the merged history.
-- [ ] 3.3 docs(openspec): openspec/config.yaml: replace only the `Domain` block of `context` with a description of the multi-tenant ecommerce hub and a pointer to `docs/design/2026-10-23-hub-core-design.md`. Verify: `openspec instructions proposal --change fix-ci-baseline --json` shows the new Domain text, and the file still parses (`openspec context --json` succeeds).
-- [ ] 3.4 docs: commit group 3 after the commit gate passes and the user approves. Verify: commit present on the branch.
+- [x] 3.1 docs: repository root: add `LICENSE` with a proprietary, all rights reserved notice, copyright 2026 TargX (design D3). Verify: file exists and names the holder and year.
+- [x] 3.2 docs: repository root: add `NOTICE` recording that the codebase was initialised from the team's `nestjs-angular-monorepo` template at `v1.8.1` plus `develop` at `45d1c79`, tracked as the `upstream` git remote. Verify: `git rev-parse --short upstream/develop` and the tag named in the file match the merged history.
+- [x] 3.3 docs(openspec): openspec/config.yaml: replace only the `Domain` block of `context` with a description of the multi-tenant ecommerce hub and a pointer to `docs/design/2026-10-23-hub-core-design.md`. Verify: `openspec instructions proposal --change fix-ci-baseline --json` shows the new Domain text, and the file still parses (`openspec context --json` succeeds).
+- [x] 3.4 docs: commit group 3 after the commit gate passes and the user approves. Verify: commit present on the branch.
 
 ## 4. Integration verification
 

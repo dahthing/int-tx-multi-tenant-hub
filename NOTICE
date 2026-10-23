@@ -1,0 +1,13 @@
+int-tx-multi-tenant-hub
+Copyright (c) 2026 TargX
+
+This codebase was initialised from the team's nestjs-angular-monorepo
+template (https://github.com/luispoliveira/nestjs-angular-monorepo),
+imported with its full history:
+
+  - main at tag v1.8.1
+  - develop at commit 45d1c79
+
+The template is tracked as the `upstream` git remote, so later template
+changes can be reviewed and merged deliberately. Code added in this
+repository after the import is covered by LICENSE.

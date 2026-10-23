@@ -90,3 +90,9 @@ After adding `packages/shared-types/turbo.json`, the same sequence (`rm -rf pack
 ```
 
 (`pnpm turbo ... --dry=json` prints a pnpm engine warning before the JSON in this environment; the binary under `node_modules/.bin/turbo` gives clean JSON.)
+
+## 3.1 to 3.3 Repository identity
+
+- `LICENSE`: proprietary notice, "Copyright (c) 2026 TargX. All rights reserved.", no permissions granted.
+- `NOTICE`: names the template, `main` at `v1.8.1` and `develop` at `45d1c79`, tracked as `upstream`. Checked against the merged history: `git rev-parse --short upstream/develop` prints `45d1c79`; `git merge-base --is-ancestor` confirms both `v1.8.1` and `45d1c79` are ancestors of the branch head.
+- `openspec/config.yaml`: only the `Domain` block changed. `openspec instructions proposal --change fix-ci-baseline --json` exits 0 and contains the new Domain text ("Multi-tenant SaaS hub for ecommerce...") and no longer the old one; `openspec context --json` exits 0.
